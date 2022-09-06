@@ -62,7 +62,7 @@ data DescriptorDeclaration = DescriptorDeclaration {
     , _descriptorDeclarationConsumes :: Maybe DescriptorConsumeSpec
     } deriving (Eq, Ord, Show)
 
-data DescriptorExport = DescriptorExportDefault | DescriptorExportSelfEdge | DescriptorExportEdgeFromBeyondTheVoid deriving (Eq, Ord, Show, Enum, Bounded)
+data DescriptorExport = DescriptorExportNone | DescriptorExportEdge | DescriptorExportSelfEdge | DescriptorExportEdgeFromBeyondTheVoid | DescriptorExportTarget deriving (Eq, Ord, Show, Enum, Bounded)
 
 type DescriptorName = Text
 
@@ -76,9 +76,9 @@ data DescriptorConsumeSpec = DescriptorConsumeSpec {
     } deriving (Eq, Ord, Show)
 
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
-$(deriveJSON defaultOptions{ constructorTagModifier = map toLower } ''DescriptorType)
-$(deriveJSON defaultOptions{ constructorTagModifier = map toLower } ''Scoping)
-$(deriveJSON defaultOptions{ constructorTagModifier = drop (T.length "DescriptorExport") . map toLower } ''DescriptorExport)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''DescriptorType)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' . drop (T.length "DescriptorExport") } ''DescriptorExport)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''DescriptorDeclaration)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_moduleContent") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
 

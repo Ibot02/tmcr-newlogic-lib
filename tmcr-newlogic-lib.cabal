@@ -15,6 +15,7 @@ extra-source-files:
 library
   exposed-modules:
       TMCR.Module
+      TMCR.Logic.Descriptor
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:
@@ -25,6 +26,7 @@ library
     , lens
     , text
     , megaparsec
+    , parser-combinators
     , transformers
     , aeson
     , yaml
