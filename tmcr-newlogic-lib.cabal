@@ -1,0 +1,47 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.34.4.
+--
+-- see: https://github.com/sol/hpack
+
+name:           tmcr-newlogic-lib
+version:        0.1.0
+author:         Ibot02
+maintainer:     jtp.jtp@gmx.de
+build-type:     Simple
+extra-source-files:
+    README.md
+
+library
+  exposed-modules:
+      TMCR.Module
+  other-modules:
+      Paths_tmcr_newlogic_lib
+  hs-source-dirs:
+      src/
+  build-depends:
+      base
+    , containers
+    , lens
+    , text
+    , megaparsec
+    , transformers
+    , aeson
+    , yaml
+    , bytestring
+  default-language: Haskell2010
+
+Test-Suite tests
+  type: exitcode-stdio-1.0
+  hs-source-dirs:
+      test/
+  main-is: Test.hs
+  build-depends:
+      base
+    , containers
+    , hspec
+    , QuickCheck
+    , quickcheck-instances
+    , yaml
+    , bytestring
+    , tmcr-newlogic-lib
