@@ -6,9 +6,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE StandaloneDeriving #-}
 module TMCR.Logic.Descriptor where
 
 import TMCR.Module
+import TMCR.Logic.Common
+
 import Text.Megaparsec as MP
 import Text.Megaparsec.Char as MP
 import qualified Text.Megaparsec.Char.Lexer as MPL
@@ -30,12 +33,16 @@ import qualified Data.Text as T
 import Data.Set (Set())
 import qualified Data.Set as S
 
+import Data.Map (Map())
+import qualified Data.Map as Map
+
 import qualified Data.Char as C
 
 import Data.Either (either)
 
 data Descriptor (t :: DescriptorType) where
     Descriptor :: [Value] -> DescriptorRule t -> Descriptor t
+deriving instance Show (Descriptor t)
 
 data DescriptorRule (t :: DescriptorType) where
     Constant :: Literal t -> DescriptorRule t
@@ -53,31 +60,28 @@ data DescriptorRule (t :: DescriptorType) where
     PriorState :: [StateBody] -> DescriptorRule Truthy
     PostState :: [StateBody] -> DescriptorRule Truthy
 
-type Name = Text
+deriving instance Show (DescriptorRule t)
 
 data Literal (t :: DescriptorType) where
     TruthyLiteral :: Oolean -> Literal Truthy
     IntLiteral :: Int -> Literal County
     InfLiteral :: Literal County -- inf
 
+deriving instance Show (Literal t)
+
 data Oolean = OolFalse | OolOol | OolTrue deriving (Eq, Ord, Show, Enum, Bounded)
 
 data Value = Variable VarName
            | ConstantValue PossiblyScopedName
-
-type VarName = Text
-
-data Nteger = Finite Int | Infinite deriving (Eq, Ord)
-
-data PossiblyScopedName = Global Text
-                        | ScopedName [Text]
+                deriving (Eq, Ord, Show)
 
 data StateBody = IsSet Value
                | IsNotSet Value
+                deriving (Eq, Ord, Show)
 
 data Relation = Forward RelName
               | Backward RelName
-type RelName = Text
+                deriving (Eq, Ord, Show)
 
 data DescriptorRole = DefaultRole | Reachability deriving (Eq, Ord, Show, Enum, Bounded)
 
@@ -111,23 +115,26 @@ data SDescriptorType :: DescriptorType -> * where
 
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 
-sc :: (MonadParsec e Text m) => m () 
-sc = MPL.space MP.space1 (MPL.skipLineComment "--") (MPL.skipBlockComment "{-" "-}")
+type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
 
-type DescriptorDeclarations = ()
-type Parser = ParsecT Void Text (Reader DescriptorDeclarations)
+type Parser = ParserC DescriptorDeclarations
 
 parseDescriptorDefinition :: (forall (t :: DescriptorType). (Name, Descriptor t) -> a) -> Parser a
 parseDescriptorDefinition cc = do
     name <- parseName
-    (argumentScopes, descType) <- lift $ fromDecl name DefaultRole
+    (argumentScopes, descType) <- fromDecl name DefaultRole
     arguments <- forM argumentScopes $ \_ -> parseValue'
     let boundVars = arguments ^.. traverse . _Variable
     MPL.symbol sc ":"
     parseRule boundVars descType (\r -> cc (name, Descriptor arguments r))
 
-fromDecl :: Name -> DescriptorRole -> Reader DescriptorDeclarations ([Scoping], DescriptorType)
-fromDecl = undefined
+fromDecl :: Name -> DescriptorRole -> Parser ([Scoping], DescriptorType)
+fromDecl name role = do
+    return ()
+    m <- lift ask
+    case Map.lookup (name, role) m of
+        Nothing -> fail $ "Descriptor `" <> T.unpack name <> "` with role " <> show role <> " not found!"
+        Just x -> return x
 
 parseRule :: [VarName] -> DescriptorType -> (forall (t :: DescriptorType). DescriptorRule t -> a) -> Parser a
 parseRule boundVars t cc = do
@@ -140,7 +147,7 @@ typecheck :: UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRul
 typecheck (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
 typecheck (UntypedDescriptorRule _ (UTIsEqual v v')) s = return $ castIfNeccessary s $ IsEqual v v'
 typecheck (UntypedDescriptorRule pos (UTCallDescriptor name args)) s = do
-    (argScopes, t) <- lift $ fromDecl name DefaultRole
+    (argScopes, t) <- fromDecl name DefaultRole
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to call to `" <> T.unpack name <> "` but got " <> show y <> "."
     case t of
         Truthy -> return $ castIfNeccessary s $ CallDescriptor @Truthy name args
@@ -148,7 +155,7 @@ typecheck (UntypedDescriptorRule pos (UTCallDescriptor name args)) s = do
             STruthy -> strErrorWithPos pos $ "Was expecting a Truthy value, but call to descriptor `" <> T.unpack name <> "` has type County."
             SCounty -> return $ CallDescriptor name args
 typecheck (UntypedDescriptorRule pos (UTCanAccess name args states)) s = do
-    (argScopes, t) <- lift $ fromDecl name Reachability
+    (argScopes, t) <- fromDecl name Reachability
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to check with [" <> T.unpack name <> "] but got " <> show y <> "."
     return $ castIfNeccessary s $ CanAccess name args states
 typecheck (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
@@ -179,13 +186,6 @@ typecheck (UntypedDescriptorRule pos (UTMax rs)) s = do
 typecheck (UntypedDescriptorRule pos (UTPriorState st)) s = return $ castIfNeccessary s $ PriorState st
 typecheck (UntypedDescriptorRule pos (UTPostState st)) s = return $ castIfNeccessary s $ PostState st
 
-strErrorWithPos :: Int -> String -> Parser a
-strErrorWithPos pos str = parseError $ FancyError pos $ S.singleton $ ErrorFail str
-
-assertEq :: (Eq a) => a -> a -> Int -> (a -> a -> String) -> Parser ()
-assertEq x y pos msg | x == y = return ()
-                     | otherwise = strErrorWithPos pos $ msg x y
-
 castIfNeccessary :: SDescriptorType t -> DescriptorRule Truthy -> DescriptorRule t
 castIfNeccessary STruthy = id
 castIfNeccessary SCounty = Cast
@@ -204,7 +204,7 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
         return (\x y -> UntypedDescriptorRule p $ f x y)
     binary' s f = binary s $ \x y -> f [x, y]
     atLeastOp = Postfix $ do
-        MPL.symbol sc ">="
+        MPL.symbol sc ">=" <|> MPL.symbol sc "≥"
         n <- parseNteger
         p <- stateOffset <$> getParserState
         return (\x -> UntypedDescriptorRule p $ UTAtLeast x n)
@@ -247,13 +247,8 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
         f <- option IsSet $ IsNotSet <$ (MPL.symbol sc "~" <|> MPL.symbol sc "¬")
         f <$> parseValue boundVars
 
-parseNteger :: Parser Nteger
-parseNteger = (Infinite <$ (MPL.symbol sc "inf" <|> MPL.symbol sc "∞")) <|> (Finite <$> MPL.lexeme sc (read <$> some MP.digitChar))
 parseOolean :: Parser Oolean
 parseOolean = (OolFalse <$ (MPL.symbol sc "false" <|> MPL.symbol sc "⊥")) <|> (OolOol <$ MPL.symbol sc "ool") <|> (OolTrue <$ (MPL.symbol sc "true" <|> MPL.symbol sc "⊤"))
-
-parseRelName :: Parser RelName
-parseRelName = parseVarName
 
 parseValue :: [VarName] -> Parser Value
 parseValue boundVars = do
@@ -268,22 +263,3 @@ parseValue boundVars = do
 
 parseValue' :: Parser Value
 parseValue' = (Variable <$> (MP.single 'v' *> parseVarName)) <|> (ConstantValue <$> parsePossiblyScopedName)
-
-parseVarName :: Parser VarName
-parseVarName = MPL.lexeme sc parseVarName'
-parseVarName' :: Parser VarName
-parseVarName' = unquoted <|> quoted where
-    unquoted :: Parser VarName
-    unquoted = fmap T.pack $ (:) <$> MP.upperChar <*> many MP.alphaNumChar
-    quoted :: Parser VarName
-    quoted = fmap T.pack $ MP.single '"' *> MP.manyTill MPL.charLiteral (MP.single '"')
-
-parsePossiblyScopedName :: Parser PossiblyScopedName
-parsePossiblyScopedName = MPL.lexeme sc parsePossiblyScopedName'
-parsePossiblyScopedName' :: Parser PossiblyScopedName
-parsePossiblyScopedName' = (Global <$> (MP.single 'g' *> parseVarName')) <|> (ScopedName <$> MP.sepBy1 parseVarName' (MP.single '.'))
-
-parseName :: Parser Name
-parseName = MPL.lexeme sc parseName'
-parseName' :: Parser Name
-parseName' = fmap T.pack $ (:) <$> MP.lowerChar <*> many MP.alphaNumChar

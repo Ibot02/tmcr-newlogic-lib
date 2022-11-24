@@ -16,6 +16,8 @@ library
   exposed-modules:
       TMCR.Module
       TMCR.Logic.Descriptor
+      TMCR.Logic.Shuffle
+      TMCR.Logic.Common
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:
