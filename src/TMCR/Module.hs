@@ -31,6 +31,7 @@ import qualified Text.Megaparsec.Char as MP
 data Module = Module {
       _moduleName :: Text
     , _moduleVersion :: Version
+    , _moduleSyntaxVersion :: Version
     , _moduleDependencies :: [(Text, VersionSpec)]
     , _moduleSoftDependency :: [(Text, VersionSpec)]
     , _moduleProvides :: ModuleContent

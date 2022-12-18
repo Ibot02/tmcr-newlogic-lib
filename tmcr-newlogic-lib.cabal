@@ -18,6 +18,9 @@ library
       TMCR.Logic.Descriptor
       TMCR.Logic.Shuffle
       TMCR.Logic.Common
+      TMCR.Logic.Logic
+      TMCR.Logic.Merge
+      TMCR.Shuffler
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:
@@ -29,10 +32,13 @@ library
     , text
     , megaparsec
     , parser-combinators
-    , transformers
+    , mtl
     , aeson
     , yaml
     , bytestring
+    , dependent-map
+    , dependent-sum
+    , recursion-schemes
   default-language: Haskell2010
 
 Test-Suite tests

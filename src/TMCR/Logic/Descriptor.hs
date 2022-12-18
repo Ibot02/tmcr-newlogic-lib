@@ -19,8 +19,7 @@ import Control.Monad.Combinators.Expr
 
 import Control.Monad
 
-import Control.Monad.Trans.Reader
-import Control.Monad.Trans.Class
+import Control.Monad.Reader
 
 import Control.Lens
 import Control.Lens.TH
@@ -40,13 +39,47 @@ import qualified Data.Char as C
 
 import Data.Either (either)
 
+import Data.Dependent.Sum (DSum())
+import qualified Data.Dependent.Sum as DS
+
+import Data.Dependent.Map (DMap())
+import qualified Data.Dependent.Map as DM
+
+import Data.GADT.Compare
+
+data DescriptorIdent t where
+    TruthyDescriptorIdent :: DescriptorName -> DescriptorIdent Truthy
+    CountyDescriptorIdent :: DescriptorName -> DescriptorIdent County
+
+instance GEq DescriptorIdent where
+    TruthyDescriptorIdent _ `geq` TruthyDescriptorIdent _ = Just Refl
+    CountyDescriptorIdent _ `geq` CountyDescriptorIdent _ = Just Refl
+    _ `geq` _ = Nothing
+
+instance GCompare DescriptorIdent where
+    TruthyDescriptorIdent n `gcompare` TruthyDescriptorIdent n' = case compare n n' of
+        LT -> GLT
+        EQ -> GEQ
+        GT -> GGT
+    CountyDescriptorIdent n `gcompare` CountyDescriptorIdent n' = case compare n n' of
+        LT -> GLT
+        EQ -> GEQ
+        GT -> GGT
+    TruthyDescriptorIdent _ `gcompare` CountyDescriptorIdent _ = GLT
+    CountyDescriptorIdent _ `gcompare` TruthyDescriptorIdent _ = GLT
+
+deriving instance Eq (DescriptorIdent t)
+deriving instance Ord (DescriptorIdent t)
+
+newtype Descriptors t = Descriptors [Descriptor t]
+
 data Descriptor (t :: DescriptorType) where
     Descriptor :: [Value] -> DescriptorRule t -> Descriptor t
 deriving instance Show (Descriptor t)
 
 data DescriptorRule (t :: DescriptorType) where
     Constant :: Literal t -> DescriptorRule t
-    IsEqual :: Value -> Value -> DescriptorRule t
+    IsEqual :: Value -> Value -> DescriptorRule Truthy
     CallDescriptor :: Name -> [Value] -> DescriptorRule t
     CanAccess :: Name -> [Value] -> [StateBody] -> DescriptorRule Truthy
     Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County
@@ -119,29 +152,36 @@ type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorT
 
 type Parser = ParserC DescriptorDeclarations
 
-parseDescriptorDefinition :: (forall (t :: DescriptorType). (Name, Descriptor t) -> a) -> Parser a
-parseDescriptorDefinition cc = do
+parseDescriptorDefinition :: Parser (DSum DescriptorIdent Descriptor)
+parseDescriptorDefinition = parseDescriptorDefinition' helper where
+    helper :: Name -> SDescriptorType t -> Descriptor t -> DSum DescriptorIdent Descriptor
+    helper n s d = case s of
+        STruthy -> TruthyDescriptorIdent n DS.:=> d
+        SCounty -> CountyDescriptorIdent n DS.:=> d
+
+parseDescriptorDefinition' :: (forall (t :: DescriptorType). Name -> SDescriptorType t -> Descriptor t -> a) -> Parser a
+parseDescriptorDefinition' cc = do
     name <- parseName
     (argumentScopes, descType) <- fromDecl name DefaultRole
     arguments <- forM argumentScopes $ \_ -> parseValue'
     let boundVars = arguments ^.. traverse . _Variable
     MPL.symbol sc ":"
-    parseRule boundVars descType (\r -> cc (name, Descriptor arguments r))
+    parseRule boundVars descType (\s r -> cc name s (Descriptor arguments r))
 
 fromDecl :: Name -> DescriptorRole -> Parser ([Scoping], DescriptorType)
 fromDecl name role = do
     return ()
-    m <- lift ask
+    m <- ask
     case Map.lookup (name, role) m of
         Nothing -> fail $ "Descriptor `" <> T.unpack name <> "` with role " <> show role <> " not found!"
         Just x -> return x
 
-parseRule :: [VarName] -> DescriptorType -> (forall (t :: DescriptorType). DescriptorRule t -> a) -> Parser a
+parseRule :: [VarName] -> DescriptorType -> (forall (t :: DescriptorType). SDescriptorType t -> DescriptorRule t -> a) -> Parser a
 parseRule boundVars t cc = do
     untyped <- parseRule' boundVars
     case t of
-            Truthy -> fmap cc $ typecheck untyped STruthy
-            County -> fmap cc $ typecheck untyped SCounty
+            Truthy -> fmap (cc STruthy) $ typecheck untyped STruthy
+            County -> fmap (cc SCounty) $ typecheck untyped SCounty
 
 typecheck :: UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule t)
 typecheck (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b

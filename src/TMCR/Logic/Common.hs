@@ -12,7 +12,7 @@ import Data.Text (Text())
 import qualified Data.Text as T
 import Data.Void
 
-import Control.Monad.Trans.Reader
+import Control.Monad.Reader
 
 type ParserC c = ParsecT Void Text (Reader c)
 
