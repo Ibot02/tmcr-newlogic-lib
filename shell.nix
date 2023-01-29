@@ -16,6 +16,7 @@ let
   myDevTools = with myNixPkgs; [
     cabal-install 
     haskellPackages.ghcid
+    haskell-language-server
   ];
 
   myShellHook = ''

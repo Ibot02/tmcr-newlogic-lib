@@ -15,7 +15,9 @@ module TMCR.Shuffler where
 import TMCR.Logic.Descriptor
 import TMCR.Logic.Shuffle
 import TMCR.Logic.Common
+import TMCR.Logic.Logic (ScopedName)
 import TMCR.Module
+import TMCR.Logic.Graphs
 
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -29,24 +31,11 @@ import Control.Monad.RWS (RWST(..), MonadState(..), MonadWriter(..), execRWST, g
 import Control.Monad.Reader (MonadReader(..), ReaderT(..), asks, local)
 
 type Thingy = PossiblyScopedName
-type LogicNodeName = Name
+type LogicNodeName = ScopedName
 
 --descriptors, with all parameters specified, with reachability (and maybe sphere) values (truthy descriptors) or reachable counts (county descriptors)
 --shuffles, hierarchical multi relations
 --logic nodes, with reachability values
-
---todo
-data Bipartite a b
-bipSetEdgesTo :: a -> [b] -> Bipartite b a -> Bipartite b a
-bipSetEdgesTo = undefined
-bipGetEdgesFrom :: a -> Bipartite a b -> [b]
-bipGetEdgesFrom = undefined
-data TaggedGraph t n
-taggedGetEdgesTo :: (Ord n) => n -> TaggedGraph t n -> [(n, t)]
-taggedGetEdgesTo = undefined
-taggedGetEdgesFrom :: (Ord n) => n -> TaggedGraph t n -> [(t, n)]
-taggedGetEdgesFrom = undefined
-
 
 
 type ShuffleValue = () --todo
@@ -91,7 +80,7 @@ data Eval m (v :: DescriptorType -> *) = Eval {
       evalConstant :: forall t. Literal t -> m (v t)
     , evalProduct :: v County -> v County -> m (v County)
     , evalSum :: [v County] -> m (v County)
-    , evalAtLeast :: (v County) -> Nteger -> m (v Truthy)
+    , evalAtLeast :: v County -> Nteger -> m (v Truthy)
     , evalExists :: Relation -> Thingy -> (Thingy -> m (v Truthy)) -> m (v Truthy)
     , evalCount :: Relation -> Thingy -> (Thingy -> m (v Truthy)) -> m (v County)
     , evalMin :: forall t. SDescriptorType t -> [v t] -> m (v t)
@@ -104,7 +93,7 @@ data Eval m (v :: DescriptorType -> *) = Eval {
     }
 
 data Definitions = Definitions {
-                     _definedEdges :: TaggedGraph (Descriptor Truthy) LogicNodeName
+                     _definedEdges :: TaggedGraph (Descriptor Truthy) (Maybe LogicNodeName)
                    , _definedLogicNodes :: Map LogicNodeName [(DescriptorName, [Thingy])]
                    , _descriptorDeclarations :: Map DescriptorName (DescriptorType, Maybe DescriptorConsumeSpec)
                    , _truthyDescriptorDefinitions :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
@@ -130,9 +119,11 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
     -- DescriptorDependend (i@(TruthyDescriptorIdent name), params) -> evalMax eval STruthy $ fmap (goT . applyParams params) $ lookupDescriptors i defs
     -- DescriptorDependend (i@(CountyDescriptorIdent name), params) -> evalMax eval SCounty $ fmap (goC . applyParams params) $ lookupDescriptors i defs
     LogicNodeDependent name -> do
-        incomingEdges <- view $ definedEdgesTo name
+        incomingEdges <- view $ definedEdgesTo (Just name)
         ts <- forM incomingEdges $ \(source, edge) -> do
-            t <- askLogicNodeAccess source
+            t <- case source of 
+                Just source -> askLogicNodeAccess source
+                Nothing -> fmap Just $ evalConstant eval $ TruthyLiteral OolTrue
             t' <- case t of
                 Nothing -> evalConstant eval $ TruthyLiteral OolFalse
             t'' <- evalDescriptor eval STruthy edge []
@@ -178,10 +169,10 @@ updateLogicNode name value = do
         forM_ accs $ \acc -> do
             w <- gets (^. _1 . cachedDependencies . to (bipGetEdgesFrom acc))
             tell w
-        w <- view $ definedEdgesFrom name . traverse . _2 . to ((:[]) . LogicNodeDependent)
+        w <- view $ definedEdgesFrom (Just name) . traverse . _2 . _Just . to ((:[]) . LogicNodeDependent)
         tell w
 
-updateCountyDescriptor :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy]) -> (v County) -> UpdateT v m ()
+updateCountyDescriptor :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy]) -> v County -> UpdateT v m ()
 updateCountyDescriptor desc@(name, params) value = do
     deps <- _2 <<.= []
     value' <- _1 . countyDescriptors . at (CountyDescriptorIdent name, params) <<.= Just value
@@ -190,7 +181,7 @@ updateCountyDescriptor desc@(name, params) value = do
         w <- gets (^. _1 . cachedDependencies . to (bipGetEdgesFrom (DescriptorDependency desc)))
         tell w
 
-updateTruthyDescriptor :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy]) -> (v Truthy) -> UpdateT v m ()
+updateTruthyDescriptor :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy]) -> v Truthy -> UpdateT v m ()
 updateTruthyDescriptor desc@(name, params) value = do
     deps <- _2 <<.= []
     value' <- _1 . truthyDescriptors . at (TruthyDescriptorIdent name, params) <<.= Just value
@@ -211,10 +202,11 @@ instance (Monad m) => MonadEval (v Truthy) (v County) (UpdateT v m) where
     --askShuffle = --TODO
 
 newtype Lift (t :: (* -> *) -> * -> *) m a = Lift { unLift :: t m a }
-        deriving newtype Functor
-        deriving newtype Applicative
-        deriving newtype Monad
-        deriving newtype MonadTrans
+        deriving newtype ( Functor
+                         , Applicative
+                         , Monad
+                         , MonadTrans
+                         )
 
 instance (MonadEval t c m, MonadTrans t', Monad (t' m)) => MonadEval t c (Lift t' m) where
     askTruthyDescriptor name params = lift $ askTruthyDescriptor name params
@@ -231,7 +223,7 @@ deriving via Lift (ReaderT r) m instance (MonadEval t c m) => MonadEval t c (Rea
 
 
 evalDescriptor :: forall m (v :: DescriptorType -> *) t. (MonadEval (v Truthy) (v County) m) => Eval (ReaderT (Map VarName Thingy) m) v -> SDescriptorType t -> Descriptor t -> [Thingy] -> m (v t)
-evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (evalConstant eval (bottomLiteral dt)) mempty) (\c -> runReaderT (go dt rule) c) (tryBinds paramSpec params) where
+evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (evalConstant eval (bottomLiteral dt)) mempty) (runReaderT (go dt rule)) (tryBinds paramSpec params) where
     bottomLiteral :: forall t. SDescriptorType t -> Literal t
     bottomLiteral STruthy = TruthyLiteral OolFalse
     bottomLiteral SCounty = IntLiteral 0
@@ -283,5 +275,5 @@ evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (e
     resOrBottom :: forall t. SDescriptorType t -> Maybe (v t) -> ReaderT (Map VarName Thingy) m (v t)
     resOrBottom t Nothing = evalConstant eval (bottomLiteral t)
     resOrBottom _ (Just v) = return v
-    valToThingy (Variable var) = asks (^?! ix var) --todo: check beforehand that all variables must be bound
+    valToThingy (Variable var) = asks (^?! ix var)
     valToThingy (ConstantValue t) = return t

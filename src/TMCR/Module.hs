@@ -28,6 +28,8 @@ import Data.Void
 import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
 
+import Control.Lens.TH
+
 data Module = Module {
       _moduleName :: Text
     , _moduleVersion :: Version
@@ -72,7 +74,7 @@ data Scoping = Unscoped | Scoped deriving (Eq, Ord, Show, Enum, Bounded)
 data DescriptorType = Truthy | County deriving (Eq, Ord, Show, Enum, Bounded)
 
 data DescriptorConsumeSpec = DescriptorConsumeSpec {
-      _descriptorConsumerSpecKey :: Text
+      _descriptorConsumerSpecKey :: Text --todo: add relation for key item type
     , _descriptorConsumerSpecLock :: Text
     } deriving (Eq, Ord, Show)
 
@@ -82,6 +84,10 @@ $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' . drop (T.length "DescriptorExport") } ''DescriptorExport)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''DescriptorDeclaration)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_moduleContent") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
+$(makeLenses ''Module)
+$(makeLenses ''ModuleContent)
+$(makeLenses ''DescriptorDeclaration)
+$(makeLenses ''DescriptorConsumeSpec)
 
 instance ToJSON Version where
     toJSON (Version v) = String $ T.pack $ foldr1 (\x y -> x <> "." <> y) $ fmap show v

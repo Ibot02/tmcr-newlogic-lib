@@ -20,6 +20,8 @@ library
       TMCR.Logic.Common
       TMCR.Logic.Logic
       TMCR.Logic.Merge
+      TMCR.Logic.Graphs
+      TMCR.Logic.Data
       TMCR.Shuffler
   other-modules:
       Paths_tmcr_newlogic_lib
