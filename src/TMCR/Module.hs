@@ -10,6 +10,14 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 
 import Data.Aeson
+    ( FromJSON(parseJSON),
+      ToJSON(toJSON),
+      Value(String),
+      withText,
+      camelTo2,
+      defaultOptions,
+      Options(constructorTagModifier, fieldLabelModifier,
+              omitNothingFields, rejectUnknownFields) )
 import Data.Aeson.TH
 import Data.Char
 
@@ -29,6 +37,11 @@ import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
 
 import Control.Lens.TH
+import TMCR.Logic.Logic (Forest)
+import TMCR.Logic.Data (LogicData')
+import TMCR.Logic.Shuffle (ShuffleStatement)
+import TMCR.Logic.Descriptor
+import Data.Dependent.Map (DMap)
 
 data Module = Module {
       _moduleName :: Text
@@ -38,6 +51,14 @@ data Module = Module {
     , _moduleSoftDependency :: [(Text, VersionSpec)]
     , _moduleProvides :: ModuleContent
     } deriving (Eq, Ord, Show)
+
+data ModuleFull = ModuleFull {
+      _moduleFullName :: Text
+    , _moduleFullVersion :: Version
+    , _moduleFullDependencies :: [(Text, VersionSpec)]
+    , _moduleFullSoftDependency :: [(Text, VersionSpec)]
+    , _moduleFullProvides :: ModuleFullContent
+    }
 
 newtype Version = Version { getVersion :: [Int] } deriving (Eq, Ord, Show)
 
@@ -55,39 +76,16 @@ data ModuleContent = ModuleContent {
     , _moduleContentShuffles :: [ResourceSpecifier]
     } deriving (Eq, Ord, Show)
 
+data ModuleFullContent = ModuleFullContent {
+      _moduleFullContentDescriptors :: Map DescriptorName DescriptorDeclaration
+    , _moduleFullContentDescriptorDefinitions :: DMap DescriptorIdent Descriptors
+    , _moduleFullContentLogic :: Forest
+    , _moduleFullContentPatches :: [ResourceSpecifier]
+    , _moduleFullContentData :: [LogicData']
+    , _moduleFullContentShuffles :: [ShuffleStatement]
+    }
+
 type ResourceSpecifier = Text
-
-data DescriptorDeclaration = DescriptorDeclaration {
-      _descriptorDeclarationExport :: Maybe DescriptorExport
-    , _descriptorDeclarationStateful :: Maybe Bool
-    , _descriptorDeclarationArguments :: [Scoping]
-    , _descriptorDeclarationType :: DescriptorType
-    , _descriptorDeclarationConsumes :: Maybe DescriptorConsumeSpec
-    } deriving (Eq, Ord, Show)
-
-data DescriptorExport = DescriptorExportNone | DescriptorExportEdge | DescriptorExportSelfEdge | DescriptorExportEdgeFromBeyondTheVoid | DescriptorExportTarget deriving (Eq, Ord, Show, Enum, Bounded)
-
-type DescriptorName = Text
-
-data Scoping = Unscoped | Scoped deriving (Eq, Ord, Show, Enum, Bounded)
-
-data DescriptorType = Truthy | County deriving (Eq, Ord, Show, Enum, Bounded)
-
-data DescriptorConsumeSpec = DescriptorConsumeSpec {
-      _descriptorConsumerSpecKey :: Text --todo: add relation for key item type
-    , _descriptorConsumerSpecLock :: Text
-    } deriving (Eq, Ord, Show)
-
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
-$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''DescriptorType)
-$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
-$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' . drop (T.length "DescriptorExport") } ''DescriptorExport)
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''DescriptorDeclaration)
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_moduleContent") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
-$(makeLenses ''Module)
-$(makeLenses ''ModuleContent)
-$(makeLenses ''DescriptorDeclaration)
-$(makeLenses ''DescriptorConsumeSpec)
 
 instance ToJSON Version where
     toJSON (Version v) = String $ T.pack $ foldr1 (\x y -> x <> "." <> y) $ fmap show v
@@ -125,4 +123,10 @@ parseVersion = fmap Version $ flip MP.sepBy (MP.single '.') $ do
     ns <- some MP.digitChar
     return $ read ns
 
+$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_moduleContent") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_module") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''Module)
+$(makeLenses ''Module)
+$(makeLenses ''ModuleContent)
+$(makeLenses ''ModuleFull)
+$(makeLenses ''ModuleFullContent)
+$(makePrisms ''Version)

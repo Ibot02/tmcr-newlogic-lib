@@ -37,8 +37,8 @@ import Data.Foldable (Foldable(..))
 }}
 -}
 
-newtype LogicData = LogicData (Map Text (Either Text (IntMap LogicData)))
-newtype LogicData' = LogicData' (Map Text (Either Text (Mode, IntMap (Maybe LogicData'))))
+newtype LogicData = LogicData (Map Text (Either Text (IntMap LogicData))) deriving (Eq, Ord, Show)
+newtype LogicData' = LogicData' (Map Text (Either Text (Mode, IntMap (Maybe LogicData')))) deriving (Eq, Ord, Show)
 
 $(deriveJSON defaultOptions ''Mode)
 

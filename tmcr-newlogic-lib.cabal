@@ -35,12 +35,15 @@ library
     , megaparsec
     , parser-combinators
     , mtl
+    , transformers
     , aeson
     , yaml
     , bytestring
     , dependent-map
     , dependent-sum
     , recursion-schemes
+    , directory
+    , polysemy
   default-language: Haskell2010
 
 Test-Suite tests

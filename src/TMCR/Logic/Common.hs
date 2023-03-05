@@ -1,4 +1,5 @@
 {-# Language OverloadedStrings #-}
+{-# LANGUAGE DataKinds #-}
 module TMCR.Logic.Common where
 
 import Text.Megaparsec as MP
@@ -13,8 +14,16 @@ import qualified Data.Text as T
 import Data.Void
 
 import Control.Monad.Reader
+import Polysemy
+import qualified Polysemy.Reader as PR
+import Polysemy.Error
 
 type ParserC c = ParsecT Void Text (Reader c)
+
+runParserC :: (Members [Error (ParseErrorBundle Text Void), PR.Reader c] r) => ParserC c a -> FilePath -> Text -> Sem r a
+runParserC p l i = do
+    x <- PR.ask
+    fromEither $ runReader (runParserT p l i) x
 
 sc :: ParserC c () 
 sc = MPL.space MP.space1 (MPL.skipLineComment "--") (MPL.skipBlockComment "{-" "-}")

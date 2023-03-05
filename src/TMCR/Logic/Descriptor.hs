@@ -9,8 +9,9 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module TMCR.Logic.Descriptor where
 
-import TMCR.Module
 import TMCR.Logic.Common
+
+import Data.Char (toLower)
 
 import Text.Megaparsec as MP
 import Text.Megaparsec.Char as MP
@@ -39,13 +40,44 @@ import qualified Data.Char as C
 
 import Data.Either (either)
 
-import Data.Dependent.Sum (DSum())
+import Data.Dependent.Sum (DSum((:=>)))
 import qualified Data.Dependent.Sum as DS
 
 import Data.Dependent.Map (DMap())
 import qualified Data.Dependent.Map as DM
 
 import Data.GADT.Compare
+import Data.Aeson (camelTo2, defaultOptions, Options(..))
+import Data.Aeson.TH
+
+data DescriptorDeclaration = DescriptorDeclaration {
+      _descriptorDeclarationExport :: Maybe DescriptorExport
+    , _descriptorDeclarationStateful :: Maybe Bool
+    , _descriptorDeclarationArguments :: [Scoping]
+    , _descriptorDeclarationType :: DescriptorType
+    , _descriptorDeclarationConsumes :: Maybe DescriptorConsumeSpec
+    } deriving (Eq, Ord, Show)
+
+data DescriptorExport = DescriptorExportNone | DescriptorExportEdge | DescriptorExportSelfEdge | DescriptorExportEdgeFromBeyondTheVoid | DescriptorExportTarget deriving (Eq, Ord, Show, Enum, Bounded)
+
+type DescriptorName = Text
+
+data Scoping = Unscoped | Scoped deriving (Eq, Ord, Show, Enum, Bounded)
+
+data DescriptorType = Truthy | County deriving (Eq, Ord, Show, Enum, Bounded)
+
+data DescriptorConsumeSpec = DescriptorConsumeSpec {
+      _descriptorConsumerSpecKey :: Text --todo: add relation for key item type
+    , _descriptorConsumerSpecLock :: Text
+    } deriving (Eq, Ord, Show)
+
+$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''DescriptorType)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
+$(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' . drop (T.length "DescriptorExport") } ''DescriptorExport)
+$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''DescriptorDeclaration)
+$(makeLenses ''DescriptorDeclaration)
+$(makeLenses ''DescriptorConsumeSpec)
 
 data DescriptorIdent t where
     TruthyDescriptorIdent :: DescriptorName -> DescriptorIdent Truthy
@@ -150,7 +182,15 @@ type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 
 type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
 
+getDescriptorDeclarations :: Map DescriptorName DescriptorDeclaration -> DescriptorDeclarations
+getDescriptorDeclarations = undefined --todo
+
 type Parser = ParserC DescriptorDeclarations
+
+parseDescriptorDefinitions :: Parser (DMap DescriptorIdent Descriptors)
+parseDescriptorDefinitions = DM.fromListWithKey mergeDescriptors . fmap pluralize <$> many parseDescriptorDefinition where
+    mergeDescriptors descriptorIdent (Descriptors xs) (Descriptors ys) = Descriptors $ xs <> ys
+    pluralize (ident :=> x) = ident :=> Descriptors [x]
 
 parseDescriptorDefinition :: Parser (DSum DescriptorIdent Descriptor)
 parseDescriptorDefinition = parseDescriptorDefinition' helper where

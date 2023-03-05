@@ -54,8 +54,8 @@ import Data.Text (Text)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import Control.Arrow (first)
-
-type ModuleIdentifier = ()
+import TMCR.Logic.Shuffle (ShuffleStatement (..), ShuffleInstruction)
+import TMCR.Module.Dependency
 
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
@@ -66,6 +66,7 @@ class Monad m => MonadMerge m where
     warningIgnoredLogicSubtree :: Forest' L.Value -> m ()
     mergeErrorUnresolvedOrderingOverwrite :: ModuleIdentifier -> ModuleIdentifier -> m a
     errorUnexpectedLogicStructure :: m a
+    errorLogicDataMergeConflict :: [([(Text, Int)],Text)] -> m a
     dependencies :: m ModuleDependencyInfo
     --
 
@@ -98,7 +99,6 @@ dtranspose = buildUp . flatten where
     flatten = concatMap (\(x,xs) -> fmap ((,) x) xs) . M.toList . fmap DM.toList
 
 type OverwritingInfo = ()
-type ModuleDependencyInfo = (ModuleIdentifier -> ModuleIdentifier -> Bool)
 
 mergeDescriptorDefinitions :: (MonadMerge m) => OverwritingInfo -> Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier (DMap DescriptorIdent Descriptors) -> m (DMap DescriptorIdent Descriptors)
 mergeDescriptorDefinitions overwriting declarations x = do
@@ -182,13 +182,6 @@ area A:
       something
 
 -}
-
-dependsOn :: ModuleDependencyInfo -> ModuleIdentifier -> ModuleIdentifier -> Bool
-dependsOn = undefined --todo
-
-dependencyOrder :: ModuleDependencyInfo -> [(ModuleIdentifier, a)] -> [(ModuleIdentifier, a)] --
-dependencyOrder = undefined
-
 
 findLast :: (MonadMerge m) => [(ModuleIdentifier, a)] -> m (ModuleIdentifier, a)
 findLast overwrites = do
@@ -364,8 +357,8 @@ data DataMergeKey = TextValue Text Text
                   | MapValue Text Int
                   deriving (Eq, Ord)
 
-mergeData :: (MonadMerge m) => Map ModuleIdentifier [LogicData'] -> m (Either [([(Text, Int)],Text)] LogicData)
-mergeData = mergeRecursively f (const absurd) g . fmap (fmap Just) where
+mergeData :: (MonadMerge m) => Map ModuleIdentifier [LogicData'] -> m LogicData
+mergeData xs = (mergeRecursively f (const absurd) g . fmap (fmap Just)) xs >>= either errorLogicDataMergeConflict return where
     f (Just (LogicData' m)) = concatMap (\(t, e) -> case e of
         Left t' -> [(L.ModeReplace, Left (TextValue t t'), Nothing)]
         Right (mode, intMap) -> fmap (\(i,maybeLogicData) -> (mode, (Left (MapValue t i)), maybeLogicData)) $ IM.toList intMap
@@ -388,3 +381,31 @@ mergeData = mergeRecursively f (const absurd) g . fmap (fmap Just) where
                 ) (M.empty, [], S.empty) . M.toList
     conflictContext :: a -> b -> [([(a, b)],c)] -> [([(a, b)],c)]
     conflictContext t i = fmap (first ((t,i):))
+
+mergeShuffle :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement] -- maybe instead have (Map Name (ShuffleInstruction, [ShuffleInstruction]))
+mergeShuffle = resolveConflicts (return . concat . toList) . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList where
+    tag ident x@(DefineShuffle _ _) = (ident, L.ModeReplace, x)
+    tag ident x@(ExpandShuffle _ _) = (ident, L.ModeAppend, x)
+
+--resolveConflicts :: (MonadMerge m) => (Map ModuleIdentifier [a] -> m b) -> [(ModuleIdentifier, L.Mode, a)] -> m b
+
+data GameDef = GameDef {
+      _defDescriptors :: Map DescriptorName DescriptorDeclaration
+    , _defDescriptorDefinitions :: DMap DescriptorIdent Descriptors
+    , _defLogic :: (TaggedGraph (DescriptorRule Truthy) (Maybe LogicNodeName), Map LogicNodeName [(DescriptorName, [Thingy])]) 
+    , _defPatches :: Map ModuleIdentifier (FilePath, [ResourceSpecifier])
+    , _defLogicData :: LogicData
+    , _defShuffles :: [ShuffleStatement]
+    }
+
+mergeContent :: (MonadMerge m) => Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
+mergeContent modules = do
+    descriptors <- mergeDescriptorDeclarations $ fmap (^. _2 . moduleFullContentDescriptors) modules
+    descriptorDefs <- mergeDescriptorDefinitions () descriptors $ fmap (^. _2 . moduleFullContentDescriptorDefinitions) modules
+    logic <- do
+        l <- mergeLogic descriptors $ fmap (^. _2 . moduleFullContentLogic) modules
+        transformLogic descriptors l
+    let patches = fmap (fmap (^. moduleFullContentPatches)) modules
+    logicData <- mergeData $ fmap (^. _2 . moduleFullContentData) modules
+    shuffles <- undefined
+    return $ GameDef descriptors descriptorDefs logic patches logicData shuffles

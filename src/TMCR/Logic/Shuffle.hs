@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module TMCR.Logic.Shuffle where
 
-import TMCR.Module
 import TMCR.Logic.Common
 
 import Text.Megaparsec as MP
@@ -197,3 +196,21 @@ parseShuffleMatch = do
         res <- parseShuffleInstruction
         return (ss, res)
     return $ ShuffleMatch s1 s2 s3
+
+parseShuffleStatements :: Parser [ShuffleStatement]
+parseShuffleStatements = many $ MPL.nonIndented sc $ parseShuffleStatementDef <|> parseShuffleStatementExt
+
+parseShuffleStatementDef :: Parser ShuffleStatement
+parseShuffleStatementDef = do
+    name <- parseName
+    MPL.symbol sc ":"
+    instr <- parseShuffleInstruction
+    return $ DefineShuffle name instr 
+
+parseShuffleStatementExt :: Parser ShuffleStatement
+parseShuffleStatementExt = do
+    MPL.symbol sc "extend"
+    name <- parseName
+    MPL.symbol sc "by"
+    instr <- parseShuffleInstruction
+    return $ ExpandShuffle name instr
