@@ -214,3 +214,4 @@ parseShuffleStatementExt = do
     MPL.symbol sc "by"
     instr <- parseShuffleInstruction
     return $ ExpandShuffle name instr
+    --todo validate no placeholders are used in extensions

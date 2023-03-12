@@ -54,8 +54,9 @@ import Data.Text (Text)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import Control.Arrow (first)
-import TMCR.Logic.Shuffle (ShuffleStatement (..), ShuffleInstruction)
+import TMCR.Logic.Shuffle (ShuffleStatement (..), ShuffleInstruction, ShuffleName)
 import TMCR.Module.Dependency
+import qualified Data.Text as T
 
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
@@ -63,6 +64,7 @@ class Monad m => MonadMerge m where
     errorDescriptorArgsMismatch :: DescriptorName -> [Scoping] -> Int -> m a
     errorDescriptorTypeMismatch :: DescriptorName -> DescriptorType -> DescriptorType -> m a
     errorOverspecifiedScope :: [L.Name] -> m a
+    mergeErrorAppendToUndefined :: ShuffleName -> m a
     warningIgnoredLogicSubtree :: Forest' L.Value -> m ()
     mergeErrorUnresolvedOrderingOverwrite :: ModuleIdentifier -> ModuleIdentifier -> m a
     errorUnexpectedLogicStructure :: m a
@@ -382,10 +384,18 @@ mergeData xs = (mergeRecursively f (const absurd) g . fmap (fmap Just)) xs >>= e
     conflictContext :: a -> b -> [([(a, b)],c)] -> [([(a, b)],c)]
     conflictContext t i = fmap (first ((t,i):))
 
-mergeShuffle :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement] -- maybe instead have (Map Name (ShuffleInstruction, [ShuffleInstruction]))
+mergeShuffle :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement]
 mergeShuffle = resolveConflicts (return . concat . toList) . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList where
     tag ident x@(DefineShuffle _ _) = (ident, L.ModeReplace, x)
     tag ident x@(ExpandShuffle _ _) = (ident, L.ModeAppend, x)
+
+groupShuffle :: (MonadMerge m) => [ShuffleStatement] -> m (Map ShuffleName (ShuffleInstruction, [ShuffleInstruction]))
+groupShuffle shuffles = M.traverseWithKey verifySingleDefine $ M.unionsWith (<>) $ fmap convert shuffles where
+    convert (DefineShuffle n v) = M.singleton n ([v],[])
+    convert (ExpandShuffle n v) = M.singleton n ([],[v])
+    verifySingleDefine _ ([x],xs) = return (x,xs)
+    verifySingleDefine n ([],_) = mergeErrorAppendToUndefined n
+    verifySingleDefine n _ = error $ "multiple definitions of shuffle " <> T.unpack n --should be unreachable in mergeShuffle >>= groupShuffle case
 
 --resolveConflicts :: (MonadMerge m) => (Map ModuleIdentifier [a] -> m b) -> [(ModuleIdentifier, L.Mode, a)] -> m b
 
@@ -395,7 +405,7 @@ data GameDef = GameDef {
     , _defLogic :: (TaggedGraph (DescriptorRule Truthy) (Maybe LogicNodeName), Map LogicNodeName [(DescriptorName, [Thingy])]) 
     , _defPatches :: Map ModuleIdentifier (FilePath, [ResourceSpecifier])
     , _defLogicData :: LogicData
-    , _defShuffles :: [ShuffleStatement]
+    , _defShuffles :: Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
     }
 
 mergeContent :: (MonadMerge m) => Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
@@ -407,5 +417,5 @@ mergeContent modules = do
         transformLogic descriptors l
     let patches = fmap (fmap (^. moduleFullContentPatches)) modules
     logicData <- mergeData $ fmap (^. _2 . moduleFullContentData) modules
-    shuffles <- undefined
+    shuffles <- (mergeShuffle $ fmap (^. _2 . moduleFullContentShuffles) modules) >>= groupShuffle
     return $ GameDef descriptors descriptorDefs logic patches logicData shuffles

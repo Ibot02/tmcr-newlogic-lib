@@ -17,24 +17,21 @@ import Control.Lens.TH
 
 import Control.Monad (ap, (>=>), forM, join)
 
-import System.Directory
+import System.Directory ()
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as BL
 import TMCR.Module
-import Data.Aeson (decode)
 import Control.Monad.Trans.Maybe (MaybeT(..))
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DM
 import TMCR.Logic.Descriptor
 import Data.Maybe (catMaybes, maybeToList)
-import TMCR.Logic.Merge (MonadMerge (..), GameDef, mergeDescriptorDeclarations)
+import TMCR.Logic.Merge (MonadMerge (..), GameDef, mergeDescriptorDeclarations, mergeContent)
 import Control.Lens
 import TMCR.Module.Dependency (makeModuleDependencyInfo)
 import qualified Data.Map as M
 
 import Polysemy
-import Polysemy.Resource
-import Polysemy.Final
 import Polysemy.Error
 import qualified Data.Text as T
 import TMCR.Logic.Common
@@ -48,6 +45,8 @@ import TMCR.Logic.Logic
     ( logicParser, Sugar, defaultSugar, Scopes )
 import TMCR.Logic.Data (LogicData')
 import TMCR.Logic.Shuffle (parseShuffleInstruction, parseShuffleStatements)
+import Data.Yaml (decodeEither, ParseException, decodeEither')
+import Data.Aeson (decode)
 
 data LocationSpec = LocationSpec {
                       _basePath :: FilePath
@@ -56,12 +55,52 @@ data LocationSpec = LocationSpec {
                     }
 
 data WithDirectory m a where
-     InSubdir :: String -> (FilePath -> m a) -> WithDirectory m [a]
+     InSubdir :: String -> (m a) -> WithDirectory m a
      ListDirectory :: WithDirectory m [String]
      WithFile :: String -> (FilePath -> ByteString -> m a) -> WithDirectory m [a]
+     --maybe WithFile :: String -> WithDirectory m [(FilePath, ByteString)]
 
 $(makeLenses ''LocationSpec)
 $(makeSem ''WithDirectory)
+
+inSubdir' :: (Member WithDirectory r) => String -> (FilePath -> Sem r a) -> Sem r [a]
+inSubdir' name a = do
+    xs <- listDirectory
+    let xs' = filter (matches name) xs
+    forM xs $ \x -> inSubdir x (a x)
+
+newtype Directory = Directory { getDirectory :: (Map FilePath (Either Directory ByteString)) } deriving (Eq, Ord, Show)
+
+matches :: String -> FilePath -> Bool
+matches "*" _ = True
+matches xs ys = xs == ys
+
+assertMaybe :: Bool -> Maybe ()
+assertMaybe False = Nothing
+assertMaybe True = Just ()
+
+runInMemoryDir :: (Member (Error ()) r) => Directory -> Sem (WithDirectory : r)  a -> Sem r a
+runInMemoryDir xs = interpretH $ \case
+    ListDirectory -> pureT $ M.keys $ getDirectory xs
+    WithFile name a -> do
+        let files = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
+                assertMaybe (name `matches` k)
+                let Right v' = v --only files
+                return v') $ getDirectory xs
+        --runTSimple $ traverse (uncurry a) files
+        a' <- runT $ traverse (uncurry a) files
+        raise $ runInMemoryDir xs a'
+    InSubdir name a -> do
+        let subdirs = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
+                assertMaybe (name == k)
+                let Left v' = v --only directories
+                return v') $ getDirectory xs
+        case subdirs of
+            [] -> throw ()
+            [(x,s)] -> do
+                a' <- runT a
+                raise $ runInMemoryDir s a'
+            _ -> throw ()
 
 {-
 execInBaseDir :: (Member (Final IO) r) => FilePath -> Sem (WithDirectory : r) a -> Sem r a
@@ -104,20 +143,41 @@ execInBaseDir path a = resourceToIOFinal $ bracket (embedFinal getCurrentDirecto
     match = (==) --todo: wildcards
 -}
 
-readModule :: (Members '[WithDirectory, Error ()] r) => Sem r Module
+readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error ()] r) => [FilePath] -> Sem r GameDef
+readGameDef sources = do
+    xs <- forM sources $ \path -> inSubdirs path $ \path -> do
+        m <- readModuleFull
+        return (path, m)
+    content <- M.traverseWithKey (\k -> \case
+        [] -> error "unreachable"
+        [x] -> return x
+        _ -> throw $ MergeErrorModuleMultipleDefine k) $ M.fromListWith (<>) $ fmap (\(path, m) -> (m ^. moduleFullName, [(path, m ^. moduleFullProvides)])) $ concat xs
+    mergeContent content
+
+inSubdirs :: forall r a. (Member WithDirectory r) => FilePath -> (FilePath -> Sem r a) -> Sem r [a]
+inSubdirs p a = inSubdirs' a $ splitPath p where
+    splitPath _ = []
+    inSubdirs' :: forall b. (FilePath -> Sem r b) -> [FilePath] -> Sem r [b]
+    inSubdirs' a [] = error "unreachable"
+    inSubdirs' a [x] = inSubdir' x a
+    inSubdirs' a (x:xs) = fmap concat $ inSubdir' x $ \path -> inSubdirs' (a . (path <>)) xs
+
+readModule :: (Members '[WithDirectory, Error ParseException, Error ()] r) => Sem r Module
 readModule = withSingleFile "module.yaml" $ \path content -> do
-    case decode content of
-        Nothing -> throw ()
-        Just x -> do
+    case decodeEither' $ BL.toStrict content of
+        Left err -> throw err
+        Right x -> do
             assert $ (x ^. moduleSyntaxVersion . _Version) `startsWith` [0,1]
             return x
 
-data MergeError = MergeError
+data MergeError = MergeErrorModuleMultipleDefine Text
 
 instance (Member (Error MergeError) r) => MonadMerge (Sem r) where
     --todo
+    dependencies = return ()
+    warningIgnoredLogicSubtree _ = return ()
 
-readModuleFull :: (Members '[Reader Scopes, WithDirectory, Error ()] r) => Sem r ModuleFull
+readModuleFull :: (Members '[Reader Scopes, WithDirectory, Error ParseException, Error ()] r) => Sem r ModuleFull
 readModuleFull = do
     m <- readModule
     content <- readModuleFullContent $ m ^. moduleProvides
@@ -157,7 +217,7 @@ withPath path c = withPath' "" path c where
         "" -> withFile "" (\path' -> c $ context <> path')
         path' -> if any isDelim path' then
                 let (d,path'') = break isDelim path' in
-                concat <$> inSubdir d (\dir' -> withPath' (context <> dir') path'' c)
+                concat <$> inSubdir' d (\dir' -> withPath' (context <> dir') path'' c)
             else
                 withFile path' (\path'' -> c $ context <> path'')
 

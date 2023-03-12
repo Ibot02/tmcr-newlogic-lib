@@ -22,6 +22,7 @@ library
       TMCR.Logic.Merge
       TMCR.Logic.Graphs
       TMCR.Logic.Data
+      TMCR.IO
       TMCR.Shuffler
   other-modules:
       Paths_tmcr_newlogic_lib
@@ -59,4 +60,5 @@ Test-Suite tests
     , quickcheck-instances
     , yaml
     , bytestring
+    , polysemy
     , tmcr-newlogic-lib
