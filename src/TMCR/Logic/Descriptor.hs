@@ -104,10 +104,15 @@ deriving instance Eq (DescriptorIdent t)
 deriving instance Ord (DescriptorIdent t)
 
 newtype Descriptors t = Descriptors [Descriptor t]
+deriving instance Show (Descriptors t)
+deriving instance Eq (Descriptors t)
+deriving instance Ord (Descriptors t)
 
 data Descriptor (t :: DescriptorType) where
     Descriptor :: [Value] -> DescriptorRule t -> Descriptor t
 deriving instance Show (Descriptor t)
+deriving instance Eq (Descriptor t)
+deriving instance Ord (Descriptor t)
 
 data DescriptorRule (t :: DescriptorType) where
     Constant :: Literal t -> DescriptorRule t
@@ -126,6 +131,8 @@ data DescriptorRule (t :: DescriptorType) where
     PostState :: [StateBody] -> DescriptorRule Truthy
 
 deriving instance Show (DescriptorRule t)
+deriving instance Eq (DescriptorRule t)
+deriving instance Ord (DescriptorRule t)
 
 data Literal (t :: DescriptorType) where
     TruthyLiteral :: Oolean -> Literal Truthy
@@ -133,6 +140,8 @@ data Literal (t :: DescriptorType) where
     InfLiteral :: Literal County -- inf
 
 deriving instance Show (Literal t)
+deriving instance Eq (Literal t)
+deriving instance Ord (Literal t)
 
 data Oolean = OolFalse | OolOol | OolTrue deriving (Eq, Ord, Show, Enum, Bounded)
 
@@ -183,7 +192,7 @@ type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
 
 getDescriptorDeclarations :: Map DescriptorName DescriptorDeclaration -> DescriptorDeclarations
-getDescriptorDeclarations = undefined --todo
+getDescriptorDeclarations = Map.fromList . fmap (\(name, decl) -> ((name, case decl ^. descriptorDeclarationExport of {Just DescriptorExportTarget -> Reachability; _ -> DefaultRole}), (decl ^. descriptorDeclarationArguments, decl ^. descriptorDeclarationType))) . Map.toList
 
 type Parser = ParserC DescriptorDeclarations
 
@@ -200,7 +209,7 @@ parseDescriptorDefinition = parseDescriptorDefinition' helper where
         SCounty -> CountyDescriptorIdent n DS.:=> d
 
 parseDescriptorDefinition' :: (forall (t :: DescriptorType). Name -> SDescriptorType t -> Descriptor t -> a) -> Parser a
-parseDescriptorDefinition' cc = do
+parseDescriptorDefinition' cc = label "descriptor definition" $ do
     name <- parseName
     (argumentScopes, descType) <- fromDecl name DefaultRole
     arguments <- forM argumentScopes $ \_ -> parseValue'
@@ -210,14 +219,13 @@ parseDescriptorDefinition' cc = do
 
 fromDecl :: Name -> DescriptorRole -> Parser ([Scoping], DescriptorType)
 fromDecl name role = do
-    return ()
     m <- ask
     case Map.lookup (name, role) m of
         Nothing -> fail $ "Descriptor `" <> T.unpack name <> "` with role " <> show role <> " not found!"
         Just x -> return x
 
 parseRule :: [VarName] -> DescriptorType -> (forall (t :: DescriptorType). SDescriptorType t -> DescriptorRule t -> a) -> Parser a
-parseRule boundVars t cc = do
+parseRule boundVars t cc = label "rule" $ do
     untyped <- parseRule' boundVars
     case t of
             Truthy -> fmap (cc STruthy) $ typecheck untyped STruthy
@@ -328,10 +336,10 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
         f <$> parseValue boundVars
 
 parseOolean :: Parser Oolean
-parseOolean = (OolFalse <$ (MPL.symbol sc "false" <|> MPL.symbol sc "⊥")) <|> (OolOol <$ MPL.symbol sc "ool") <|> (OolTrue <$ (MPL.symbol sc "true" <|> MPL.symbol sc "⊤"))
+parseOolean = label "oolean" $ (OolFalse <$ (MPL.symbol sc "false" <|> MPL.symbol sc "⊥")) <|> (OolOol <$ MPL.symbol sc "ool") <|> (OolTrue <$ (MPL.symbol sc "true" <|> MPL.symbol sc "⊤"))
 
 parseValue :: [VarName] -> Parser Value
-parseValue boundVars = do
+parseValue boundVars = label "value" $ do
     v <- parseValue'
     case v of
         Variable v' -> if v' `elem` boundVars then return () else fail $ "Variable v" <> quoteIfNeccessary v' <> " is not bound anywhere." where

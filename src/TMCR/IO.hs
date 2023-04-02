@@ -11,13 +11,14 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 module TMCR.IO where
 
 import Control.Lens.TH
 
 import Control.Monad (ap, (>=>), forM, join)
 
-import System.Directory ()
+import qualified System.Directory as Sys (withCurrentDirectory, listDirectory, doesDirectoryExist)
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as BL
 import TMCR.Module
@@ -55,7 +56,7 @@ data LocationSpec = LocationSpec {
                     }
 
 data WithDirectory m a where
-     InSubdir :: String -> (m a) -> WithDirectory m a
+     InSubdir :: String -> m a -> WithDirectory m a
      ListDirectory :: WithDirectory m [String]
      WithFile :: String -> (FilePath -> ByteString -> m a) -> WithDirectory m [a]
      --maybe WithFile :: String -> WithDirectory m [(FilePath, ByteString)]
@@ -71,6 +72,19 @@ inSubdir' name a = do
 
 newtype Directory = Directory { getDirectory :: (Map FilePath (Either Directory ByteString)) } deriving (Eq, Ord, Show)
 
+readDirectoryFull :: FilePath -> IO Directory
+readDirectoryFull path = Sys.withCurrentDirectory path $ do
+    dir <- Sys.listDirectory "."
+    contents <- forM dir $ \path -> do
+        isDir <- Sys.doesDirectoryExist path
+        if isDir then do
+            contents <- readDirectoryFull path
+            return (path, Left contents)
+        else do
+            contents <- BL.readFile path
+            return (path, Right contents)
+    return $ Directory $ M.fromList contents
+
 matches :: String -> FilePath -> Bool
 matches "*" _ = True
 matches xs ys = xs == ys
@@ -85,7 +99,7 @@ runInMemoryDir xs = interpretH $ \case
     WithFile name a -> do
         let files = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
                 assertMaybe (name `matches` k)
-                let Right v' = v --only files
+                Right v' <- Just v --only files
                 return v') $ getDirectory xs
         --runTSimple $ traverse (uncurry a) files
         a' <- runT $ traverse (uncurry a) files
@@ -93,7 +107,7 @@ runInMemoryDir xs = interpretH $ \case
     InSubdir name a -> do
         let subdirs = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
                 assertMaybe (name == k)
-                let Left v' = v --only directories
+                Left v' <- Just v --only directories
                 return v') $ getDirectory xs
         case subdirs of
             [] -> throw ()
@@ -111,7 +125,6 @@ execInBaseDir path a = resourceToIOFinal $ bracket (embedFinal getCurrentDirecto
             ListDirectory -> do
                 listDirectory "."
 -}
-
 
 {-withCurrentDirectory path $ exec a where
     exec :: WithDirectoryT a -> IO a
@@ -143,7 +156,7 @@ execInBaseDir path a = resourceToIOFinal $ bracket (embedFinal getCurrentDirecto
     match = (==) --todo: wildcards
 -}
 
-readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error ()] r) => [FilePath] -> Sem r GameDef
+readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
 readGameDef sources = do
     xs <- forM sources $ \path -> inSubdirs path $ \path -> do
         m <- readModuleFull
@@ -156,41 +169,46 @@ readGameDef sources = do
 
 inSubdirs :: forall r a. (Member WithDirectory r) => FilePath -> (FilePath -> Sem r a) -> Sem r [a]
 inSubdirs p a = inSubdirs' a $ splitPath p where
-    splitPath _ = []
+    splitPath x = reverse $ fmap reverse $ go "" [] x where
+        go "" [] "" = [""]
+        go "" xs "" = xs
+        go x xs "" = x:xs
+        go "" xs ('/':cs) = go "" xs cs
+        go x xs ('/':cs) = go "" (x:xs) cs
+        go x xs (c:cs) = go (c:x) xs cs
     inSubdirs' :: forall b. (FilePath -> Sem r b) -> [FilePath] -> Sem r [b]
     inSubdirs' a [] = error "unreachable"
     inSubdirs' a [x] = inSubdir' x a
     inSubdirs' a (x:xs) = fmap concat $ inSubdir' x $ \path -> inSubdirs' (a . (path <>)) xs
 
-readModule :: (Members '[WithDirectory, Error ParseException, Error ()] r) => Sem r Module
+readModule :: (Members '[WithDirectory, Error ParseException, Error AssertionFailed] r) => Sem r Module
 readModule = withSingleFile "module.yaml" $ \path content -> do
     case decodeEither' $ BL.toStrict content of
         Left err -> throw err
         Right x -> do
-            assert $ (x ^. moduleSyntaxVersion . _Version) `startsWith` [0,1]
+            assert "syntaxVerion 0.1" $ (x ^. moduleSyntaxVersion . _Version) `startsWith` [0,1]
             return x
 
-data MergeError = MergeErrorModuleMultipleDefine Text
+newtype AssertionFailed = AssertionFailed { getAssertionName :: Text } deriving (Eq, Ord, Show)
+
+data MergeError = MergeErrorModuleMultipleDefine Text deriving (Eq, Ord, Show)
 
 instance (Member (Error MergeError) r) => MonadMerge (Sem r) where
     --todo
     dependencies = return ()
     warningIgnoredLogicSubtree _ = return ()
 
-readModuleFull :: (Members '[Reader Scopes, WithDirectory, Error ParseException, Error ()] r) => Sem r ModuleFull
+readModuleFull :: (Members '[Reader Scopes, WithDirectory, Error ParseException, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => Sem r ModuleFull
 readModuleFull = do
     m <- readModule
     content <- readModuleFullContent $ m ^. moduleProvides
     return $ ModuleFull (m ^. moduleName) (m ^. moduleVersion) (m ^. moduleDependencies) (m ^. moduleSoftDependency) content
 
-readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error ()] r) => ModuleContent -> Sem r ModuleFullContent
+readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error (ParseErrorBundle Text Void)] r) => ModuleContent -> Sem r ModuleFullContent
 readModuleFullContent content =
     runReader
         @DescriptorDeclarations
         (getDescriptorDeclarations $ content ^. moduleContentDescriptors) $
-    mapError
-        @(ParseErrorBundle Text Void)
-        (const ()) $
     do
         descriptorDefs <- fmap (DM.unionsWithKey (\_ (Descriptors xs) (Descriptors ys) -> Descriptors (xs <> ys)) . concat) $ forM (content ^. moduleContentDescriptorDefinitions) $ \x -> do
             withPath (T.unpack x) $ \p c ->
@@ -207,7 +225,6 @@ readModuleFullContent content =
             withPath (T.unpack x) $ \p c ->
                 runReader @() () $
                 runParserC parseShuffleStatements p (TE.decodeUtf8 $ BL.toStrict c)
-            undefined
         return $ ModuleFullContent (content ^. moduleContentDescriptors) descriptorDefs logic (content ^. moduleContentPatches) logicData shuffles
 
 withPath :: forall r a. (Member WithDirectory r) => FilePath -> (FilePath -> ByteString -> Sem r a) -> Sem r [a]
@@ -224,16 +241,16 @@ withPath path c = withPath' "" path c where
 isDelim :: Char -> Bool
 isDelim = (==) '/'
 
-withSingleFile :: (Members '[WithDirectory, Error ()] r) => FilePath -> (FilePath -> ByteString -> Sem r a) -> Sem r a
+withSingleFile :: (Members '[WithDirectory, Error AssertionFailed] r) => FilePath -> (FilePath -> ByteString -> Sem r a) -> Sem r a
 withSingleFile path cont = do
     xs <- withFile path (curry return)
     case xs of
         [x] -> uncurry cont x
-        _ -> throw ()
+        _ -> throw $ AssertionFailed "single file"
 
-assert :: (Member (Error ()) r) => Bool -> Sem r ()
-assert True = return ()
-assert False = throw ()
+assert :: (Member (Error AssertionFailed) r) => Text -> Bool -> Sem r ()
+assert _ True = return ()
+assert msg False = throw $ AssertionFailed msg
 
 startsWith :: (Eq a) => [a] -> [a] -> Bool
 startsWith _ [] = True

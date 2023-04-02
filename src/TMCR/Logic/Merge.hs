@@ -12,6 +12,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE LambdaCase #-}
 module TMCR.Logic.Merge where
 
 import TMCR.Module
@@ -401,12 +402,13 @@ groupShuffle shuffles = M.traverseWithKey verifySingleDefine $ M.unionsWith (<>)
 
 data GameDef = GameDef {
       _defDescriptors :: Map DescriptorName DescriptorDeclaration
-    , _defDescriptorDefinitions :: DMap DescriptorIdent Descriptors
+    , _defDescriptorDefinitionsTruthy :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
+    , _defDescriptorDefinitionsCounty :: Map (DescriptorIdent County) [Descriptor County]
     , _defLogic :: (TaggedGraph (DescriptorRule Truthy) (Maybe LogicNodeName), Map LogicNodeName [(DescriptorName, [Thingy])]) 
     , _defPatches :: Map ModuleIdentifier (FilePath, [ResourceSpecifier])
     , _defLogicData :: LogicData
     , _defShuffles :: Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
-    }
+    } deriving (Eq, Ord)
 
 mergeContent :: (MonadMerge m) => Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
 mergeContent modules = do
@@ -418,4 +420,9 @@ mergeContent modules = do
     let patches = fmap (fmap (^. moduleFullContentPatches)) modules
     logicData <- mergeData $ fmap (^. _2 . moduleFullContentData) modules
     shuffles <- (mergeShuffle $ fmap (^. _2 . moduleFullContentShuffles) modules) >>= groupShuffle
-    return $ GameDef descriptors descriptorDefs logic patches logicData shuffles
+    let (descriptorDefsTruthy, descriptorDefsCounty) = DM.foldrWithKey mergeContentHelper (mempty, mempty) descriptorDefs
+    return $ GameDef descriptors descriptorDefsTruthy descriptorDefsCounty logic patches logicData shuffles
+
+mergeContentHelper :: (DescriptorIdent v) -> Descriptors v -> (Map (DescriptorIdent Truthy) [Descriptor Truthy], Map (DescriptorIdent County) [Descriptor County]) -> (Map (DescriptorIdent Truthy) [Descriptor Truthy], Map (DescriptorIdent County) [Descriptor County])
+mergeContentHelper x@(TruthyDescriptorIdent _) (Descriptors v) (t,c) = (M.insert x v t, c)
+mergeContentHelper x@(CountyDescriptorIdent _) (Descriptors v) (t,c) = (t, M.insert x v c)

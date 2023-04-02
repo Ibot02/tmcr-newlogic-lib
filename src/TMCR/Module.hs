@@ -123,8 +123,8 @@ parseVersion = fmap Version $ flip MP.sepBy (MP.single '.') $ do
     ns <- some MP.digitChar
     return $ read ns
 
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_moduleContent") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_module") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''Module)
+$(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_moduleContent"), omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
+$(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_module"), omitNothingFields = True, rejectUnknownFields = True} ''Module)
 $(makeLenses ''Module)
 $(makeLenses ''ModuleContent)
 $(makeLenses ''ModuleFull)

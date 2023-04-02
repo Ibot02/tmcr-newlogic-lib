@@ -52,11 +52,13 @@ data ShuffleProgress t c = ShuffleProgress {
 data ShuffleDependend =
       DescriptorDependend (DescriptorName, [Thingy])
     | LogicNodeDependent LogicNodeName
+    deriving (Eq, Ord, Show)
 
 data ShuffleDependency =
       DescriptorDependency (DescriptorName, [Thingy])
     | ShuffleDependency ShuffleName
     | AccessDependency (DescriptorName, [Thingy])
+    deriving (Eq, Ord, Show)
 
 $(makeLenses ''ShuffleProgress)
 

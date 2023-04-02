@@ -1,0 +1,4 @@
+flag Name:
+    [set Name].
+
+spawn: true.

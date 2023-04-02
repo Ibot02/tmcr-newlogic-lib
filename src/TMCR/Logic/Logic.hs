@@ -111,7 +111,7 @@ logicParser scopes = many $ nonIndented scn $ parseTree (getScopes scopes) where
     parseName = lexeme sc parseName' <?> "name"
     -- parseName' :: ReaderT [Sugar] (Parsec Void Text) Name
     parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar)) <|> (Wildcard <$ char '*')
-    --possiblyEscapedChar :: ReaderT [Sugar] (Parsec Void Text) Char
+    -- possiblyEscapedChar :: ReaderT [Sugar] (Parsec Void Text) Char
     possiblyEscapedChar = do
         c <- satisfy (/= '"')
         case c of

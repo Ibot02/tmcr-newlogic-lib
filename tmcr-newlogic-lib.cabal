@@ -45,6 +45,7 @@ library
     , recursion-schemes
     , directory
     , polysemy
+    , algebraic-graphs
   default-language: Haskell2010
 
 Test-Suite tests

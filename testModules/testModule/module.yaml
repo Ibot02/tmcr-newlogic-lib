@@ -1,0 +1,34 @@
+
+name: testModule
+version: '1.0'
+syntax-version: '0.1'
+dependencies: []
+soft-dependency: []
+provides:
+  descriptors:
+    flag:
+      arguments:
+        - scoped
+      stateful: false
+      type: truthy
+      export: edge
+    set:
+      arguments:
+        - scoped
+      stateful: false
+      type: truthy
+      export: target
+    spawn:
+      arguments: []
+      stateful: false
+      type: truthy
+      export: edge-from-beyond-the-void
+  descriptor-definitions:
+    - descriptors.dscr
+  logic:
+    - logic.logic
+  shuffles:
+    - shuffles.shuff
+  data:
+    - data.json
+  patches: []
