@@ -1,0 +1,188 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DefaultSignatures #-}
+module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), Canonical(..), CountyLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, fromNumber) where
+
+
+import TMCR.Logic.Descriptor
+import TMCR.Logic.Common
+
+import Data.Set (Set)
+import qualified Data.Set as S
+
+{-
+(meet, top) and (join, bottom) are monoids, and there's distributive laws
+-}
+class Lattice a where
+    meet :: a -> a -> a
+    join :: a -> a -> a
+    bottom :: a
+    top :: a
+
+instance Lattice Bool where
+    meet = (&&)
+    join = (||)
+    bottom = False
+    top = True
+
+newtype Meet a = Meet { getMeet :: a }
+newtype Join a = Join { getJoin :: a }
+
+instance (Lattice a) => Semigroup (Meet a) where
+    Meet a <> Meet b = Meet $ meet a b
+instance (Lattice a) => Monoid (Meet a) where
+    mempty = Meet top
+
+instance (Lattice a) => Semigroup (Join a) where
+    Join a <> Join b = Join $ join a b
+instance (Lattice a) => Monoid (Join a) where
+    mempty = Join bottom
+
+newtype DNF a = DNF { getDisjunctions :: Set (Set a) } deriving (Eq, Ord, Show)
+
+singleToDNF :: (Ord a) => a -> DNF a
+singleToDNF = DNF . S.singleton . S.singleton
+
+instance (Ord a) => Lattice (DNF a) where
+    meet (DNF x) (DNF y) = DNF $ S.map (uncurry S.union) $ S.cartesianProduct x y
+    join (DNF x) (DNF y) = DNF $ S.union x y
+    bottom = DNF $ S.empty
+    top = DNF $ S.singleton S.empty
+
+data OolAble t = OolAble t t deriving (Eq, Ord, Show)
+
+liftOolAble :: t -> OolAble t
+liftOolAble x = OolAble x x
+
+outOfLogic :: (Lattice t) => OolAble t
+outOfLogic = OolAble bottom top
+
+getInLogic (OolAble a _) = a
+getOutOfLogic (OolAble _ a) = a
+
+instance (Lattice t) => Lattice (OolAble t) where
+    bottom = OolAble bottom bottom
+    top = OolAble top top
+    meet (OolAble x1 x2) (OolAble y1 y2) = OolAble (meet x1 y1) (meet x1 y2 `join` meet x2 y1 `join` meet x2 y2)
+    join (OolAble x1 x2) (OolAble y1 y2) = OolAble (join x1 y1) $ x1 `join` x2 `join` y1 `join` y2
+
+class Lattice a => Canonical a where
+    canonicalize :: a -> a
+    equiv :: a -> a -> Bool
+    default equiv :: (Eq a)  => a -> a -> Bool
+    a `equiv` b = canonicalize a == canonicalize b
+    implies :: a -> a -> Bool
+    a `implies` b = (a `join` b) `equiv` b
+
+instance Canonical Bool where
+    canonicalize = id
+
+instance Canonical t => Canonical (OolAble t) where
+    canonicalize = id
+    (OolAble x1 y1) `equiv` (OolAble x2 y2) = x1 `equiv` x2 && y1 `equiv` y2
+
+--monotonically decreasing
+data Count t = CountyValue [t] t
+    deriving (Eq, Ord, Show)
+
+finitePart (CountyValue ts _) = ts
+infiniteExtension (CountyValue _ t) = t
+
+instance (Canonical t) => Canonical (Count t) where
+    canonicalize (CountyValue ts t) = CountyValue (takeWhile (\t' -> not $ t `implies` t') ts) t
+    equiv (CountyValue [] t) (CountyValue [] t') = equiv t t'
+    equiv (CountyValue as t) (CountyValue [] t') = all (`equiv` t') as && equiv t t'
+    equiv (CountyValue [] t) (CountyValue bs t') = all (equiv t) bs && equiv t t'
+    equiv (CountyValue (a:as) t) (CountyValue (b:bs) t') = equiv a b && equiv (CountyValue as t) (CountyValue bs t')
+
+liftCount :: t -> Count t
+liftCount t = CountyValue [] t
+
+fromNumber :: (Lattice t) => Int -> Count t
+fromNumber n = CountyValue (replicate n top) bottom
+
+instance (Lattice t) => Lattice (Count t) where
+    bottom = CountyValue [] bottom
+    top = CountyValue [] top
+    meet (CountyValue [] x) (CountyValue [] y) = CountyValue [] $ meet x y
+    meet (CountyValue (a:as) x) y'@(CountyValue [] y) = (a `meet` y) `andThen` (CountyValue as x `meet` y')
+    meet x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `meet` b) `andThen` (x' `meet` CountyValue bs y)
+    meet (CountyValue (a:as) x) (CountyValue (b:bs) y) = (a `meet` b) `andThen` (CountyValue as x `meet` CountyValue bs y)
+    join (CountyValue [] x) (CountyValue [] y) = CountyValue [] $ join x y
+    join (CountyValue (a:as) x) y'@(CountyValue [] y) = (a `join` y) `andThen` (CountyValue as x `join` y')
+    join x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `join` b) `andThen` (x' `join` CountyValue bs y)
+    join (CountyValue (a:as) x) (CountyValue (b:bs) y) = (a `join` b) `andThen` (CountyValue as x `join` CountyValue bs y)
+
+andThen :: t -> (Count t) -> (Count t)
+andThen a (CountyValue b c) = CountyValue (a:b) c
+
+class (Lattice a) => CountyLattice a where
+    addCounty :: a -> a -> a
+    multiplyCounty :: a -> a -> a
+
+instance (Lattice t) => CountyLattice (Count t) where
+    --addCounty :: CountyValue -> CountyValue -> CountyValue
+    addCounty (CountyValue [] x) (CountyValue [] y) = CountyValue [] $ x `join` y
+    addCounty x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `join` b) `andThen` addCounty x' (CountyValue bs y)
+    addCounty (CountyValue (a:as) x) y'@(CountyValue [] y) = (a `join` y) `andThen` addCounty (CountyValue as x) y'
+    addCounty x'@(CountyValue (a:as) x) y'@(CountyValue (b:bs) y) = (a `join` b) `andThen` meet (addCounty (CountyValue as x) y') (addCounty x' (CountyValue bs y))
+    multiplyCounty (CountyValue [] x) y = scale x y
+    multiplyCounty (CountyValue (a:as) x) y = scale a y `addCounty` multiplyCounty (CountyValue as x) y
+
+class (Lattice t, CountyLattice c) => LogicValues t c where
+    scale :: t -> c -> c
+    atLeast :: Nteger -> c -> t
+
+instance (Lattice t) => LogicValues t (Count t) where
+    --scale :: TruthyValue -> CountyValue -> CountyValue
+    scale x (CountyValue bs y) = CountyValue (fmap (meet x) bs) y
+    atLeast Infinite (CountyValue _ x) = x
+    atLeast (Finite n) _ | n <= 0 = top
+    atLeast (Finite _) (CountyValue [] x) = x
+    atLeast (Finite 1) (CountyValue (a:_ ) _) = a
+    atLeast (Finite n) (CountyValue (_:as) x) = atLeast (Finite $ n-1) (CountyValue as x)
+
+data LogicValue t :: DescriptorType -> * where
+    LogicTruthyValue :: t -> LogicValue t Truthy
+    LogicCountyValue :: (Count t) -> LogicValue t County
+
+deriving instance (Eq t) => Eq (LogicValue t Truthy)
+deriving instance (Eq t) => Eq (LogicValue t County)
+deriving instance (Ord t) => Ord (LogicValue t Truthy)
+deriving instance (Ord t) => Ord (LogicValue t County)
+deriving instance (Show t) => Show (LogicValue t Truthy)
+deriving instance (Show t) => Show (LogicValue t County)
+
+instance (Canonical t) => Canonical (LogicValue t Truthy) where
+    canonicalize (LogicTruthyValue t) = LogicTruthyValue $ canonicalize t
+    equiv (LogicTruthyValue t) (LogicTruthyValue t') = equiv t t'
+instance (Canonical t) => Canonical (LogicValue t County) where
+    equiv (LogicCountyValue t) (LogicCountyValue t') = equiv t t'
+    canonicalize (LogicCountyValue t) = LogicCountyValue $ canonicalize t
+
+instance (Lattice t) => Lattice (LogicValue t Truthy) where
+    top = LogicTruthyValue top
+    bottom = LogicTruthyValue bottom
+    LogicTruthyValue x `meet` LogicTruthyValue y = LogicTruthyValue $ x `meet` y
+    LogicTruthyValue x `join` LogicTruthyValue y = LogicTruthyValue $ x `join` y
+
+instance (Lattice t) => Lattice (LogicValue t County) where
+    top = LogicCountyValue top
+    bottom = LogicCountyValue bottom
+    LogicCountyValue x `meet` LogicCountyValue y = LogicCountyValue $ x `meet` y
+    LogicCountyValue x `join` LogicCountyValue y = LogicCountyValue $ x `join` y
+
+instance (Lattice t) => CountyLattice (LogicValue t County) where
+    LogicCountyValue x `addCounty` LogicCountyValue y = LogicCountyValue $ x `addCounty` y
+    LogicCountyValue x `multiplyCounty` LogicCountyValue y = LogicCountyValue $ x `multiplyCounty` y
+
+instance (Lattice t) => LogicValues (LogicValue t Truthy) (LogicValue t County) where
+    scale (LogicTruthyValue x) (LogicCountyValue y) = LogicCountyValue $ scale x y
+    atLeast n (LogicCountyValue x) = LogicTruthyValue $ atLeast n x
+
+latticeFromMaybe Nothing = bottom
+latticeFromMaybe (Just x) = x

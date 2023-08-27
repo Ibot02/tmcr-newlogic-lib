@@ -1,9 +1,10 @@
-module TMCR.Logic.Graphs (Bipartite, bipSetEdgesTo, bipGetEdgesFrom, TaggedGraph, taggedGetEdgesTo, taggedGetEdgesFrom, taggedEdge) where
+module TMCR.Logic.Graphs (Bipartite, bipSetEdgesTo, bipGetEdgesFrom, TaggedGraph, taggedGetEdgesTo, taggedGetEdgesFrom, taggedEdge, taggedGetNodes) where
 
 import Algebra.Graph
 import qualified Algebra.Graph.Bipartite.AdjacencyMap as Bip
 import qualified Algebra.Graph.Labelled as Labelled
 import Algebra.Graph.Labelled ((-<), (>-))
+import Data.Set (Set())
 
 --todo
 type Bipartite = Bip.AdjacencyMap
@@ -24,3 +25,6 @@ flatten (Just xs) = [(n,t) | (ts,n) <- xs, t <- ts]
 
 taggedEdge :: t -> n -> n -> TaggedGraph t n
 taggedEdge t src dst = src -< [t] >- dst
+
+taggedGetNodes :: (Ord a) => TaggedGraph t a -> Set a
+taggedGetNodes = Labelled.vertexSet

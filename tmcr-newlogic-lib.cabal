@@ -15,6 +15,7 @@ extra-source-files:
 library
   exposed-modules:
       TMCR.Module
+      TMCR.TestData
       TMCR.Logic.Descriptor
       TMCR.Logic.Shuffle
       TMCR.Logic.Common
@@ -22,6 +23,8 @@ library
       TMCR.Logic.Merge
       TMCR.Logic.Graphs
       TMCR.Logic.Data
+      TMCR.Logic.Algebra
+      TMCR.Module.Dependency
       TMCR.IO
       TMCR.Shuffler
   other-modules:

@@ -83,6 +83,8 @@ data DescriptorIdent t where
     TruthyDescriptorIdent :: DescriptorName -> DescriptorIdent Truthy
     CountyDescriptorIdent :: DescriptorName -> DescriptorIdent County
 
+deriving instance Show (DescriptorIdent a)
+
 instance GEq DescriptorIdent where
     TruthyDescriptorIdent _ `geq` TruthyDescriptorIdent _ = Just Refl
     CountyDescriptorIdent _ `geq` CountyDescriptorIdent _ = Just Refl
@@ -136,8 +138,9 @@ deriving instance Ord (DescriptorRule t)
 
 data Literal (t :: DescriptorType) where
     TruthyLiteral :: Oolean -> Literal Truthy
-    IntLiteral :: Int -> Literal County
-    InfLiteral :: Literal County -- inf
+    CountyLiteral :: Nteger -> Literal County
+    -- IntLiteral :: Int -> Literal County
+    -- InfLiteral :: Literal County -- inf
 
 deriving instance Show (Literal t)
 deriving instance Eq (Literal t)
@@ -178,8 +181,7 @@ data UntypedDescriptorRule' =
 
 data UntypedLiteral =
       UTOolean Oolean
-    | UTIntLiteral Int
-    | UTInfLiteral
+    | UTNteger Nteger
 
 $(makePrisms ''Value)
 
@@ -233,6 +235,8 @@ parseRule boundVars t cc = label "rule" $ do
 
 typecheck :: UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule t)
 typecheck (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
+typecheck (UntypedDescriptorRule pos (UTConstant (UTNteger b))) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but Nteger (" <> show b <> ") is County."
+typecheck (UntypedDescriptorRule _ (UTConstant (UTNteger b))) SCounty = return $ Constant $ CountyLiteral b
 typecheck (UntypedDescriptorRule _ (UTIsEqual v v')) s = return $ castIfNeccessary s $ IsEqual v v'
 typecheck (UntypedDescriptorRule pos (UTCallDescriptor name args)) s = do
     (argScopes, t) <- fromDecl name DefaultRole
@@ -300,9 +304,7 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
         p <- stateOffset <$> getParserState
         UntypedDescriptorRule p <$> terms' boundVars
     terms' boundVars = (UTConstant <$> constant) <|> isEqual boundVars <|> call boundVars <|> canAccess boundVars <|> quantifiers boundVars <|> statey boundVars
-    constant = (countyConstant <$> parseNteger) <|> (UTOolean <$> parseOolean)
-    countyConstant (Finite n) = UTIntLiteral n
-    countyConstant Infinite = UTInfLiteral
+    constant = (UTNteger <$> parseNteger) <|> (UTOolean <$> parseOolean)
     isEqual boundVars = try $ do
         v <- parseValue boundVars
         MPL.lexeme sc (some (MP.single '='))

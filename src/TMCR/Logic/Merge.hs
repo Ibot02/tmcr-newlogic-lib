@@ -38,7 +38,6 @@ import Data.GADT.Compare
 
 import Data.Coerce (coerce)
 import TMCR.Logic.Graphs (TaggedGraph, taggedEdge)
-import TMCR.Shuffler (LogicNodeName, Thingy)
 import Control.Lens
 import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
@@ -46,7 +45,7 @@ import Control.Lens.Extras
 import Data.List (sortBy)
 import Data.Maybe (catMaybes, maybeToList, mapMaybe)
 import Control.Monad (unless)
-import TMCR.Logic.Common (PossiblyScopedName (..), Name)
+import TMCR.Logic.Common (PossiblyScopedName (..), Name, Thingy)
 import Data.Function (fix)
 import TMCR.Logic.Data
 import Data.Functor.Compose (Compose (..))
@@ -58,6 +57,7 @@ import Control.Arrow (first)
 import TMCR.Logic.Shuffle (ShuffleStatement (..), ShuffleInstruction, ShuffleName)
 import TMCR.Module.Dependency
 import qualified Data.Text as T
+import TMCR.Logic.Algebra (DNF(..), singleToDNF, Meet(..), Join(..))
 
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
@@ -128,15 +128,16 @@ generalizeForest :: Forest -> Forest' (L.Value, L.Mode)
 generalizeForest = fmap generalizeTree where
     generalizeTree (L.Node a b f) = Node (a,b) $ generalizeForest f
 
-topDown :: ((a,b) -> (c,b)) -> b -> Tree' a -> Tree' c
-topDown f b a = runIdentity $ topDownM (Identity . f) b a
+--broken
+-- topDown :: ((a,b) -> (c,b)) -> b -> Tree' a -> Tree' c
+-- topDown f b a = runIdentity $ topDownM (Identity . f) b a
 
-topDownM :: (Monad m) => ((a,b) -> m (c,b)) -> b -> Tree' a -> m (Tree' c)
-topDownM f = go where
-    go b (Node a as) = do
-        (c, b') <- f (a,b)
-        as' <- traverse (go b') as
-        return $ Node c as'
+-- topDownM :: (Monad m) => ((a,b) -> m (c,b)) -> b -> Tree' a -> m (Tree' c)
+-- topDownM f = go where
+--     go b (Node a as) = do
+--         (c, b') <- f (a,b)
+--         as' <- traverse (go b') as
+--         return $ Node c as'
 
 {-
 
@@ -220,25 +221,41 @@ resolveConflicts f possiblyConflictingDefinitions = do
 
 mergeRecursively :: (MonadMerge m, Ord i) => (a -> [(L.Mode, Either i j, a)]) -> (i -> j -> Bool) -> (Map i b -> b) -> Map ModuleIdentifier [a] -> m b
 mergeRecursively destruct wildcards reconstruct = f where
-    f i = fmap reconstruct $ traverse (resolveConflicts f) $ g $ concatMap (\(moduleIdent, xs) -> fmap (\(mode, ident, val) -> (moduleIdent, mode, ident, val)) xs) $ M.toList $ fmap (concatMap destruct) i
-    --g :: [(ModuleIdentifier, L.Mode, Either i j, a)] -> Map i [(ModuleIdentifier, L.Mode, a)]
-    g = fmap reverse . fst . foldl (\(m,w) (moduleIdent, mode, ident, val) -> case ident of
-        Left ident ->
-            let newVal = (moduleIdent, mode, val)
-                wildcarded = mapMaybe (\(moduleIdent, mode, wildcardIdent, val) -> if wildcards ident wildcardIdent then Just (moduleIdent, mode, val) else Nothing) w
-            in (M.alter (Just . maybe (newVal : wildcarded) (newVal :) ) ident m,w)
-        Right wildcard -> (M.mapWithKey (\ident xs -> if wildcards ident wildcard then (moduleIdent, mode, val) : xs else xs) m, (moduleIdent, mode, wildcard, val) : w)
-        ) (M.empty, [])
+    f i = fmap reconstruct $
+            traverse (resolveConflicts f) $
+            groupAndWildcards wildcards $
+            concatMap (\(moduleIdent, xs) -> fmap (\(mode, ident, val) -> (moduleIdent, mode, ident, val)) xs) $
+            M.toList $
+            fmap (concatMap destruct)
+            i
 
-mergeLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier Forest -> m (Forest' L.Value)
-mergeLogic descriptors sources = traverse (fullyScopeNames . generalizeForest) sources >>= f where
-    f :: (MonadMerge m) => Map ModuleIdentifier (Forest' (L.Value, L.Mode)) -> m (Forest' L.Value)
-    f = mergeRecursively (\(project -> NodeF (val,mode) xs) -> fmap (\x -> (mode, (if hasWildcard val then Right else Left) val, x)) xs) (flip wildcardMatches) (fmap (embed . uncurry NodeF) . M.toList)
+groupAndWildcards :: (Ord i) => (i -> j -> Bool) -> [(ModuleIdentifier, L.Mode, Either i j, a)] -> Map i [(ModuleIdentifier, L.Mode, a)]
+groupAndWildcards wildcards = fmap reverse . fst . foldl (\(m,w) (moduleIdent, mode, ident, val) -> case ident of
+    Left ident ->
+        let newVal = (moduleIdent, mode, val)
+            wildcarded = mapMaybe (\(moduleIdent, mode, wildcardIdent, val) -> if wildcards ident wildcardIdent then Just (moduleIdent, mode, val) else Nothing) w
+        in (M.alter (Just . maybe (newVal : wildcarded) (newVal :) ) ident m,w)
+    Right wildcard -> (M.mapWithKey (\ident xs -> if wildcards ident wildcard then (moduleIdent, mode, val) : xs else xs) m, (moduleIdent, mode, wildcard, val) : w)
+    ) (M.empty, [])
+
+--todo: fix
+mergeLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier [Forest] -> m (Forest' L.Value)
+mergeLogic descriptors sources = traverse (traverse $ fullyScopeNames descriptors . directEdges . generalizeForest) sources >>= f where
+    f :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
+    f = mergeRecursively
+            destruct
+            (flip wildcardMatches)
+            reconstruct
+    destruct :: Forest' (L.Value, L.Mode) -> [(L.Mode, Either L.Value L.Value, Forest' (L.Value, L.Mode))]
+    --destruct (project -> NodeF (val,mode) xs) = fmap (\x -> (mode, (if hasWildcard val then Right else Left) val, x)) xs
+    destruct = fmap $ \(project -> NodeF (val, mode) xs) -> (mode, (if hasWildcard val then Right else Left) val, xs)
+    reconstruct :: Map i (Forest' i) -> Forest' i
+    reconstruct = fmap (embed . uncurry NodeF) . M.toList
     hasWildcard (L.Anon _) = False
     hasWildcard (L.NamedScoped _ name) = hasWildcard' name
     hasWildcard (L.NamedScoping _ name) = hasWildcard'' name
     hasWildcard (L.Edge name name2) = hasWildcard' name || hasWildcard' name2
-    hasWildcard (L.EdgeUndirected name name2) = hasWildcard' name || hasWildcard' name2
+    --hasWildcard (L.EdgeUndirected name name2) = hasWildcard' name || hasWildcard' name2
     hasWildcard' L.FullWildcard = True
     hasWildcard' (L.Global name) = hasWildcard'' name
     hasWildcard' (L.Scoped names) = any hasWildcard'' names
@@ -255,45 +272,60 @@ mergeLogic descriptors sources = traverse (fullyScopeNames . generalizeForest) s
     wildcardMatches' _ _ = False
     wildcardMatches'' L.Wildcard _ = True
     wildcardMatches'' x y = x == y
-    fullyScopeNames :: (MonadMerge m) => Forest' (L.Value, L.Mode) -> m (Forest' (L.Value, L.Mode))
-    fullyScopeNames = traverse (topDownM (\((value, mode), scope) -> fmap (\(value', scope') -> ((value', mode), scope)) (scopeStep value scope )) [])
-    scopeStep :: (MonadMerge m) => L.Value -> [L.Name] -> m (L.Value, [L.Name])
-    scopeStep value scope = case value of
-        L.NamedScoping _ s -> return (value, s:scope)
-        L.NamedScoped "node" x -> do
-            x' <- applyScope scope x
-            return $ (L.NamedScoped "node" x', scope)
-        L.NamedScoped desc val -> case M.lookup desc descriptors of
-            Nothing -> errorDescriptorNotDeclared desc
-            Just ((^. descriptorDeclarationArguments) -> [scoping]) -> case scoping of
-                Scoped -> do
-                    val' <- applyScope scope val
-                    return $ (L.NamedScoped desc val', scope)
-                Unscoped -> return (value, scope)
-            Just ((^. descriptorDeclarationArguments) -> xs) -> errorDescriptorArgsMismatch desc xs 1
-        L.Edge x y -> do
-            x' <- applyScope scope x
-            y' <- applyScope scope y
-            return $ (L.Edge x' y', scope)
-        L.EdgeUndirected x y -> do
-            x' <- applyScope scope x
-            y' <- applyScope scope y
-            return $ (L.EdgeUndirected x y, scope)
-        L.Anon _ -> return $ (value, scope)
-    applyScope _ x@(L.Global _) = return x
-    applyScope _ x@L.FullWildcard = return x
-    applyScope scope (L.Scoped names) | length names > length scope + 1 = errorOverspecifiedScope names
-                                      | otherwise = return $ L.Scoped $ prependRev (drop (length names - 1) scope) names
-    prependRev [] x = x
-    prependRev (x:xs) y = prependRev xs $ x:y
+    directEdges :: Forest' (L.Value, a) -> Forest' (L.Value, a)
+    directEdges = fmap (embed . (\(NodeF x ys) -> NodeF x $ directEdges ys) . project). concatMap (\case 
+        Node (L.EdgeUndirected x y, mode) children -> [Node (L.Edge x y, mode) children, Node (L.Edge y x, mode) children]
+        x -> [x])
+
+fullyScopeNames :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' (L.Value, L.Mode) -> m (Forest' (L.Value, L.Mode))
+--fullyScopeNames = traverse (topDownM (\((value, mode), scope) -> fmap (\(value', scope') -> ((value', mode), scope)) (scopeStep value scope )) [])
+fullyScopeNames descriptors = fullyScopeNames' [] where
+    fullyScopeNames' :: (MonadMerge m) => [L.Name] -> Forest' (L.Value, L.Mode) -> m (Forest' (L.Value, L.Mode))
+    fullyScopeNames' scope = traverse (fmap embed . (\(NodeF (val, mode) ys) -> do
+            (val', scope') <- scopeStep descriptors val scope
+            ys' <- fullyScopeNames' scope' ys
+            return $ NodeF (val', mode) ys'
+        ) . project)
+
+scopeStep :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> L.Value -> [L.Name] -> m (L.Value, [L.Name])
+scopeStep descriptors value scope = case value of
+    L.NamedScoping _ s -> return (value, s:scope)
+    L.NamedScoped "node" x -> do
+        x' <- applyScope scope x
+        return $ (L.NamedScoped "node" x', scope)
+    L.NamedScoped desc val -> case M.lookup desc descriptors of
+        Nothing -> errorDescriptorNotDeclared desc
+        Just ((^. descriptorDeclarationArguments) -> [scoping]) -> case scoping of
+            Scoped -> do
+                val' <- applyScope scope val
+                return $ (L.NamedScoped desc val', scope)
+            Unscoped -> return (value, scope)
+        Just ((^. descriptorDeclarationArguments) -> xs) -> errorDescriptorArgsMismatch desc xs 1
+    L.Edge x y -> do
+        x' <- applyScope scope x
+        y' <- applyScope scope y
+        return $ (L.Edge x' y', scope)
+    L.EdgeUndirected x y -> do
+        x' <- applyScope scope x
+        y' <- applyScope scope y
+        return $ (L.EdgeUndirected x y, scope)
+    L.Anon _ -> return $ (value, scope)
+applyScope _ x@(L.Global _) = return x
+applyScope _ x@L.FullWildcard = return x
+applyScope scope (L.Scoped names) | length names > length scope + 1 = errorOverspecifiedScope names
+                                    | otherwise = return $ L.Scoped $ prependRev (drop (length names - 1) scope) names
+prependRev [] x = x
+prependRev (x:xs) y = prependRev xs $ x:y
 
 
-transformLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' L.Value -> m (TaggedGraph (DescriptorRule Truthy) (Maybe LogicNodeName), Map LogicNodeName [(DescriptorName, [Thingy])])
+transformLogic :: forall m. (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
 transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest where
+    f :: Tree' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     f (Node (L.NamedScoping _ _) forest) = Data.Foldable.fold <$> traverse f forest
     f (Node (L.NamedScoped "node" logicNodeName) forest) = Data.Foldable.fold <$> traverse (nodeDescr logicNodeName) forest
-    f (Node (L.Edge source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target)) <$> (Min <$> traverse descrRule desc) <*> pure M.empty
-    f (Node (L.EdgeUndirected source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target) <> taggedEdge e (Just target) (Just source)) <$> (Min <$> traverse descrRule desc) <*> pure M.empty
+    f (Node (L.Edge source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target)) <$> ((getJoin . foldMap Join) <$> traverse descrRule desc) <*> pure M.empty
+    --f (Node (L.EdgeUndirected source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target) <> taggedEdge e (Just target) (Just source)) <$> ((getJoin . foldMap Join) <$> traverse descrRule desc) <*> pure M.empty --cleared out in mergeLogic
+    nodeDescr :: L.LogicNodeName -> Tree' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     nodeDescr name (Node (L.Anon descr) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
         Just def -> do
@@ -304,8 +336,8 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
                 Nothing -> errorDescriptorNotDeclared descr --todo, make this go away while parsing the module or merging
                 Just DescriptorExportNone -> errorDescriptorNotDeclared descr
                 Just DescriptorExportEdge -> errorDescriptorNotDeclared descr
-                Just DescriptorExportSelfEdge -> return (taggedEdge (CallDescriptor descr []) (Just name) (Just name), mempty)
-                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (CallDescriptor descr []) Nothing (Just name), mempty)
+                Just DescriptorExportSelfEdge -> return (taggedEdge (singleToDNF (descr, [])) (Just name) (Just name), mempty)
+                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (singleToDNF (descr, [])) Nothing (Just name), mempty)
                 Just DescriptorExportTarget -> return (mempty, M.singleton name [(descr,[])])
     nodeDescr name (Node (L.NamedScoped descr arg) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
@@ -317,13 +349,13 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
                 Nothing -> errorDescriptorNotDeclared descr --todo, make this go away while parsing the module or merging
                 Just DescriptorExportNone -> errorDescriptorNotDeclared descr
                 Just DescriptorExportEdge -> errorDescriptorNotDeclared descr
-                Just DescriptorExportSelfEdge -> return (taggedEdge (CallDescriptor descr [ConstantValue $ nonWildcardScopedName arg]) (Just name) (Just name), mempty)
-                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (CallDescriptor descr [ConstantValue $ nonWildcardScopedName arg]) Nothing (Just name), mempty)
+                Just DescriptorExportSelfEdge -> return (taggedEdge (singleToDNF (descr, [nonWildcardScopedName arg])) (Just name) (Just name), mempty)
+                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (singleToDNF (descr, [nonWildcardScopedName arg])) Nothing (Just name), mempty)
                 Just DescriptorExportTarget -> return (mempty, M.singleton name [(descr,[nonWildcardScopedName arg])])
     nodeDescr _ _ = errorUnexpectedLogicStructure
-    descrRule :: (MonadMerge m) => Tree' L.Value -> m (DescriptorRule Truthy)
-    descrRule (Node (L.Anon "and") xs) = Min <$> traverse descrRule xs --todo: forbid reserved names "and" and "or" to be declared as descriptors
-    descrRule (Node (L.Anon "or") xs)  = Max <$> traverse descrRule xs
+    descrRule :: (MonadMerge m) => Tree' L.Value -> m (DNF (DescriptorName, [Thingy]))
+    descrRule (Node (L.Anon "and") xs) = (getMeet . foldMap Meet) <$> traverse descrRule xs --todo: forbid reserved names "and" and "or" to be declared as descriptors
+    descrRule (Node (L.Anon "or") xs)  = (getJoin . foldMap Join) <$> traverse descrRule xs
     descrRule (Node (L.Anon descr) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
         Just def -> do
@@ -331,7 +363,7 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
             unless ((def ^. descriptorDeclarationType) == Truthy) $ errorDescriptorTypeMismatch descr County Truthy
             unless (null xs) $ warningIgnoredLogicSubtree xs
             case def ^. descriptorDeclarationExport of
-                Just DescriptorExportEdge -> return $ CallDescriptor descr []
+                Just DescriptorExportEdge -> return $ singleToDNF $ (descr, [])
                 _ -> errorDescriptorNotDeclared descr
     descrRule (Node (L.NamedScoped descr arg) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
@@ -340,7 +372,7 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
             unless ((def ^. descriptorDeclarationType) == Truthy) $ errorDescriptorTypeMismatch descr County Truthy
             unless (null xs) $ warningIgnoredLogicSubtree xs
             case def ^. descriptorDeclarationExport of
-                Just DescriptorExportEdge -> return $ CallDescriptor descr [ConstantValue $ nonWildcardScopedName arg]
+                Just DescriptorExportEdge -> return $ singleToDNF $ (descr, [nonWildcardScopedName arg])
                 _ -> errorDescriptorNotDeclared descr
     descrRule _ = errorUnexpectedLogicStructure
 
@@ -404,11 +436,13 @@ data GameDef = GameDef {
       _defDescriptors :: Map DescriptorName DescriptorDeclaration
     , _defDescriptorDefinitionsTruthy :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
     , _defDescriptorDefinitionsCounty :: Map (DescriptorIdent County) [Descriptor County]
-    , _defLogic :: (TaggedGraph (DescriptorRule Truthy) (Maybe LogicNodeName), Map LogicNodeName [(DescriptorName, [Thingy])]) 
+    , _defLogic :: (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     , _defPatches :: Map ModuleIdentifier (FilePath, [ResourceSpecifier])
     , _defLogicData :: LogicData
     , _defShuffles :: Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
     } deriving (Eq, Ord)
+
+$(makeLenses ''GameDef)
 
 mergeContent :: (MonadMerge m) => Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
 mergeContent modules = do

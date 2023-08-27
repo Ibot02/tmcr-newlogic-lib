@@ -79,7 +79,7 @@ data ModuleContent = ModuleContent {
 data ModuleFullContent = ModuleFullContent {
       _moduleFullContentDescriptors :: Map DescriptorName DescriptorDeclaration
     , _moduleFullContentDescriptorDefinitions :: DMap DescriptorIdent Descriptors
-    , _moduleFullContentLogic :: Forest
+    , _moduleFullContentLogic :: [Forest]
     , _moduleFullContentPatches :: [ResourceSpecifier]
     , _moduleFullContentData :: [LogicData']
     , _moduleFullContentShuffles :: [ShuffleStatement]

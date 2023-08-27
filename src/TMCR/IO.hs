@@ -12,6 +12,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE StandaloneDeriving #-}
 module TMCR.IO where
 
 import Control.Lens.TH
@@ -36,7 +38,7 @@ import Polysemy
 import Polysemy.Error
 import qualified Data.Text as T
 import TMCR.Logic.Common
-import Text.Megaparsec (ParseErrorBundle)
+import Text.Megaparsec (ParseErrorBundle, parseErrorTextPretty, errorBundlePretty)
 import Data.Void (Void)
 import Data.Text (Text)
 import Polysemy.Reader
@@ -48,6 +50,9 @@ import TMCR.Logic.Data (LogicData')
 import TMCR.Logic.Shuffle (parseShuffleInstruction, parseShuffleStatements)
 import Data.Yaml (decodeEither, ParseException, decodeEither')
 import Data.Aeson (decode)
+
+import Data.Functor.Foldable.TH
+import Data.Functor.Classes
 
 data LocationSpec = LocationSpec {
                       _basePath :: FilePath
@@ -61,16 +66,30 @@ data WithDirectory m a where
      WithFile :: String -> (FilePath -> ByteString -> m a) -> WithDirectory m [a]
      --maybe WithFile :: String -> WithDirectory m [(FilePath, ByteString)]
 
+newtype Directory = Directory { getDirectory :: (Map FilePath (Either ByteString Directory)) } deriving (Eq, Ord, Show)
+
 $(makeLenses ''LocationSpec)
 $(makeSem ''WithDirectory)
+$(makeBaseFunctor ''Directory)
 
+instance Eq1 DirectoryF where
+    liftEq e (DirectoryF a) (DirectoryF b) = liftEq e' a b where
+        e' (Left x) (Left y) = x == y
+        e' (Right x) (Right y) = e x y
+        e' _ _ = False
+instance Ord1 DirectoryF where
+    liftCompare e (DirectoryF a) (DirectoryF b) = liftCompare e' a b where
+        e' (Left x) (Left y) = compare x y
+        e' (Right x) (Right y) = e x y
+        e' (Left _) (Right _) = LT
+        e' (Right _) (Left _) = GT
+    
 inSubdir' :: (Member WithDirectory r) => String -> (FilePath -> Sem r a) -> Sem r [a]
 inSubdir' name a = do
     xs <- listDirectory
     let xs' = filter (matches name) xs
     forM xs $ \x -> inSubdir x (a x)
 
-newtype Directory = Directory { getDirectory :: (Map FilePath (Either Directory ByteString)) } deriving (Eq, Ord, Show)
 
 readDirectoryFull :: FilePath -> IO Directory
 readDirectoryFull path = Sys.withCurrentDirectory path $ do
@@ -79,10 +98,10 @@ readDirectoryFull path = Sys.withCurrentDirectory path $ do
         isDir <- Sys.doesDirectoryExist path
         if isDir then do
             contents <- readDirectoryFull path
-            return (path, Left contents)
+            return (path, Right contents)
         else do
             contents <- BL.readFile path
-            return (path, Right contents)
+            return (path, Left contents)
     return $ Directory $ M.fromList contents
 
 matches :: String -> FilePath -> Bool
@@ -99,7 +118,7 @@ runInMemoryDir xs = interpretH $ \case
     WithFile name a -> do
         let files = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
                 assertMaybe (name `matches` k)
-                Right v' <- Just v --only files
+                Left v' <- Just v --only files
                 return v') $ getDirectory xs
         --runTSimple $ traverse (uncurry a) files
         a' <- runT $ traverse (uncurry a) files
@@ -107,7 +126,7 @@ runInMemoryDir xs = interpretH $ \case
     InSubdir name a -> do
         let subdirs = M.toList $ runIdentity $ M.traverseMaybeWithKey (\k v -> return $ do
                 assertMaybe (name == k)
-                Left v' <- Just v --only directories
+                Right v' <- Just v --only directories
                 return v') $ getDirectory xs
         case subdirs of
             [] -> throw ()
@@ -155,6 +174,13 @@ execInBaseDir path a = resourceToIOFinal $ bracket (embedFinal getCurrentDirecto
     canHandleArchive _ = False
     match = (==) --todo: wildcards
 -}
+
+readGameDefStrErr :: (Members '[Reader Scopes, Error Text, WithDirectory] r) => [FilePath] -> Sem r GameDef
+readGameDefStrErr sources = joinErrorTextPrefix @ParseException "ParseException: " $ joinErrorTextPrefix @MergeError "Merge Error: " $ joinErrorTextPrefix @AssertionFailed "Assertion Failed: " $ joinError @(ParseErrorBundle Text Void) @Text (T.pack . errorBundlePretty) $ readGameDef sources where
+    joinError :: forall e e' r a. (Member (Error e') r) => (e -> e') -> Sem (Error e ': r) a -> Sem r a
+    joinError convert k = runError @e k >>= (either (throw . convert) return)
+    joinErrorTextPrefix :: forall e r a. (Member (Error Text) r, Show e) => Text -> Sem (Error e ': r) a -> Sem r a
+    joinErrorTextPrefix pre k = joinError (\x -> pre <> T.pack (show x)) k
 
 readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
 readGameDef sources = do
@@ -214,7 +240,7 @@ readModuleFullContent content =
             withPath (T.unpack x) $ \p c ->
                 runParserC parseDescriptorDefinitions p (TE.decodeUtf8 $ BL.toStrict c)
         scopes <- ask @Scopes
-        logic <- fmap (concat . concat) $ forM (content ^. moduleContentLogic) $ \x -> do
+        logic <- fmap concat $ forM (content ^. moduleContentLogic) $ \x -> do
             withPath (T.unpack x) $ \p c ->
                 runReader @[Sugar] defaultSugar $
                 runParserC (logicParser scopes) p (TE.decodeUtf8 $ BL.toStrict c)
@@ -237,6 +263,11 @@ withPath path c = withPath' "" path c where
                 concat <$> inSubdir' d (\dir' -> withPath' (context <> dir') path'' c)
             else
                 withFile path' (\path'' -> c $ context <> path'')
+
+withPathFragments :: forall r a. (Member WithDirectory r) => [FilePath] -> (FilePath -> ByteString -> Sem r a) -> Sem r [a]
+withPathFragments [] = withFile ""
+withPathFragments [x] = withFile x
+withPathFragments (x:xs) = \c -> inSubdir x $ withPathFragments xs c
 
 isDelim :: Char -> Bool
 isDelim = (==) '/'

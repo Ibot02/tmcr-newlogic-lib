@@ -39,6 +39,7 @@ data Value = Anon Text
            | EdgeUndirected ScopedName ScopedName
            deriving (Eq, Ord, Show)
 
+type LogicNodeName = ScopedName
 data ScopedName = Global Name
                 | Scoped [Name]
                 | FullWildcard
@@ -61,6 +62,8 @@ defaultSugar :: [Sugar]
 defaultSugar = [
       SugarOpList "and" "&&"
     , SugarOpList "or" "||"
+    , SugarOpList "and" "&"
+    , SugarOpList "or" "|"
     ]
 
 nonLinebreakSpace :: Char -> Bool

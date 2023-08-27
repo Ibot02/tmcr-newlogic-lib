@@ -71,3 +71,5 @@ type RelName = Text
 
 parseRelName :: ParserC c RelName
 parseRelName = fmap T.pack $ (:) <$> MP.upperChar <*> many MP.alphaNumChar
+
+type Thingy = PossiblyScopedName

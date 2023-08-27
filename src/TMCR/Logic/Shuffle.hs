@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 module TMCR.Logic.Shuffle where
 
 import TMCR.Logic.Common
@@ -12,6 +13,7 @@ import Data.Text (Text())
 import qualified Data.Text as T
 
 import qualified Data.Set as S
+import qualified Data.Map as M
 
 type Parser = ParserC ()
 
@@ -215,3 +217,26 @@ parseShuffleStatementExt = do
     instr <- parseShuffleInstruction
     return $ ExpandShuffle name instr
     --todo validate no placeholders are used in extensions
+
+
+data ShuffleValue = ShuffleValue {
+          mainPart :: ShuffleValue'
+        , expansions :: [ShuffleValue']
+    } deriving (Eq, Ord, Show)
+
+data ShuffleValue' = Progress (Thingy, Thingy) ShuffleValue'
+                   | Delay ShuffleValue'
+                   | Remaining ShuffleInstruction
+                   | Loop [(Thingy, Thingy)]
+                   deriving (Eq, Ord, Show)
+
+getAllPartial :: ShuffleValue -> (Bool, Thingy) -> [(Thingy, Nteger)]
+getAllPartial x (isForwards, y) = go (mainPart x) (M.empty) where
+    go (Remaining _) m = M.toList m
+    go (Progress x v) m | cond x = go v $ M.adjust increment (extr x) m
+    go (Delay x) m = go x m
+    go (Loop xs) m = M.toList $ M.union (M.fromList $ fmap ((flip (,) Infinite) . extr) $ filter cond xs) m
+    cond (a,b) = if isForwards then a == y else b == y
+    extr (a,b) = if isForwards then b else a
+    increment (Finite !x) = Finite $ x + 1
+    increment Infinite = Infinite
