@@ -1,0 +1,7 @@
+trick Town.Main.GuardEastwards: ool.
+trick Town.Main.GuardBootSkip: ool.
+trick VeilFalls.Main.HPCapeJump: ool.
+
+item CanSpin:
+  item Sword,
+  item SpinAttack.

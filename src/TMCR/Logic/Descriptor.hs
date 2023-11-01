@@ -7,6 +7,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE CPP #-}
 module TMCR.Logic.Descriptor where
 
 import TMCR.Logic.Common
@@ -71,11 +72,19 @@ data DescriptorConsumeSpec = DescriptorConsumeSpec {
     , _descriptorConsumerSpecLock :: Text
     } deriving (Eq, Ord, Show)
 
+#if MIN_VERSION_aeson(1,5,0)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
+#else
+$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower} ''DescriptorConsumeSpec)
+#endif
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''DescriptorType)
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' . drop (T.length "DescriptorExport") } ''DescriptorExport)
+#if MIN_VERSION_aeson(1,5,0)
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True, rejectUnknownFields = True} ''DescriptorDeclaration)
+#else
+$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True} ''DescriptorDeclaration)
+#endif
 $(makeLenses ''DescriptorDeclaration)
 $(makeLenses ''DescriptorConsumeSpec)
 

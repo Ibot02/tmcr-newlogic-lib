@@ -1,5 +1,6 @@
 {-# Language OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE CPP #-}
 module TMCR.Logic.Common where
 
 import Text.Megaparsec as MP
@@ -23,13 +24,17 @@ type ParserC c = ParsecT Void Text (Reader c)
 runParserC :: (Members [Error (ParseErrorBundle Text Void), PR.Reader c] r) => ParserC c a -> FilePath -> Text -> Sem r a
 runParserC p l i = do
     x <- PR.ask
-    fromEither $ runReader (runParserT p l i) x
+    either throw return $ runReader (runParserT p l i) x
 
 sc :: ParserC c () 
 sc = MPL.space MP.space1 (MPL.skipLineComment "--") (MPL.skipBlockComment "{-" "-}")
 
 strErrorWithPos :: Int -> String -> ParserC c a
+#if MIN_VERSION_megaparsec(8,0,0)
 strErrorWithPos pos str = parseError $ FancyError pos $ S.singleton $ ErrorFail str
+#else
+strErrorWithPos _ str = fail str
+#endif
 
 assertEq :: (Eq a) => a -> a -> Int -> (a -> a -> String) -> ParserC c ()
 assertEq x y pos msg | x == y = return ()
@@ -44,7 +49,10 @@ data PossiblyScopedName = Global Text
 parsePossiblyScopedName :: ParserC c PossiblyScopedName
 parsePossiblyScopedName = MPL.lexeme sc parsePossiblyScopedName'
 parsePossiblyScopedName' :: ParserC c PossiblyScopedName
-parsePossiblyScopedName' = (Global <$> (MP.single 'g' *> parseVarName')) <|> (ScopedName <$> MP.sepBy1 parseVarName' (MP.single '.'))
+parsePossiblyScopedName' = (Global <$> (MP.single 'g' *> parseVarName')) <|> (ScopedName <$> sepBy1' parseVarName' (MP.single '.')) where
+    sepBy1' p sep = do
+        x <- p
+        (x:) <$> many (MP.try $ sep >> p)
 
 parseName :: ParserC c Name
 parseName = MPL.lexeme sc parseName'

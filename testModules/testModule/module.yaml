@@ -1,4 +1,3 @@
-
 name: testModule
 version: '1.0'
 syntax-version: '0.1'
@@ -23,6 +22,24 @@ provides:
       stateful: false
       type: truthy
       export: edge-from-beyond-the-void
+  logic-sugar:
+    door:
+      type: multi
+      expands-to:
+        - entrance
+        - exit
+    "|":
+      type: operator
+      replacement: or
+    "||":
+      type: operator
+      replacement: or
+    "&":
+      type: operator
+      replacement: and
+    "&&":
+      type: operator
+      replacement: and
   descriptor-definitions:
     - descriptors.dscr
   logic:

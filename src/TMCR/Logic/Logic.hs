@@ -23,6 +23,7 @@ import Data.Text (Text())
 import qualified Data.Text as T
 
 data Sugar = SugarOpList Text Text
+           | SugarMulti [Text] Text
          deriving (Eq, Ord, Show)
 
 data Name = PlainName Text
@@ -48,6 +49,9 @@ data ScopedName = Global Name
 data Mode = ModeDefault --select or new
           | ModeAppend
           | ModeReplace
+          | ModeAppendIfExists
+          | ModeReplaceIfExists
+          | ModeReplaceOrCreate
           deriving (Eq, Ord, Show)
 
 $(makePrisms ''Mode)
@@ -58,6 +62,7 @@ type Forest = [Tree]
 data Tree = Node Value Mode Forest
             deriving (Eq, Ord, Show)
 
+{-
 defaultSugar :: [Sugar]
 defaultSugar = [
       SugarOpList "and" "&&"
@@ -65,6 +70,7 @@ defaultSugar = [
     , SugarOpList "and" "&"
     , SugarOpList "or" "|"
     ]
+-}
 
 nonLinebreakSpace :: Char -> Bool
 nonLinebreakSpace c = isSeparator c && (c `notElem` ['\n','\r'])
@@ -76,44 +82,60 @@ scn :: (MonadParsec e Text m) => m ()
 scn = Text.Megaparsec.Char.Lexer.space space1 (skipLineComment "#") empty
 
 logicParser :: (MonadReader [Sugar] m, MonadParsec Void Text m) => Scopes -> m Forest
-logicParser scopes = many $ nonIndented scn $ parseTree (getScopes scopes) where
+logicParser scopes = fmap concat $ many $ nonIndented scn $ parseTree (getScopes scopes) where
     -- parseTree :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) Tree
     parseTree [] = parseSugarOpList <|> parseTree' []
     parseTree scopes = parseTree' scopes
     -- parseTree' :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) Tree
-    parseTree' scopes = indentBlock scn $ parseValue scopes >>= \v -> parseTreeHeader v (drop 1 scopes) <|> return (IndentNone (Node v ModeDefault []))
+    parseTree' scopes = indentBlock scn $ parseValue scopes >>= \v -> parseTreeHeader v (drop 1 scopes) <|> return (IndentNone [Node v ModeDefault [] | v <- v])
     -- parseTreeHeader :: Value -> [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) (IndentOpt (ReaderT [Sugar] (Parsec Void Text)) Tree Tree)
     parseTreeHeader v scopes = do
         m <- parseMode
-        (IndentNone . Node v m <$> inlineChildren scopes) <|> (return $ IndentSome Nothing (return . Node v m) (parseTree scopes))
-    -- parseValue :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) Value
+        (IndentNone . (\c -> fmap (\v -> Node v m c) v) <$> inlineChildren scopes) <|> (return $ IndentSome Nothing (\c -> return $ [Node v m (join c) | v <- v]) (parseTree scopes))
+    -- parseValue :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) [Value]
     parseValue [] = parseAnonOrScoped <|> try parseEdge <|> parseUndirectedEdge
     parseValue (scope:_) = do
         typename <- symbol sc scope
         scopeName <- parseName
-        return $ NamedScoping typename scopeName
+        return $ [NamedScoping typename scopeName]
     parseAnonOrScoped = do
         typename <- parseType
-        (NamedScoped typename <$> parseScopedName) <|> (return $ Anon typename)
+        typenames <- resolveMultis typename
+        ((\arg -> fmap (\typename -> NamedScoped typename arg) typenames) <$> parseScopedName) <|> (return $ Anon <$> typenames)
+    resolveMultis name = do
+        sugar <- ask
+        case (filter (\case
+                SugarOpList _ _ -> False
+                SugarMulti _ name' -> name == name') sugar) of
+            [] -> return [name]
+            [SugarMulti re _] -> return re
+            _ -> error "multiple sugar multis of the same name"
+    -- parseUndirectedEdge = label "edge" $ do
+    --     source <- parseLocalName
+    --     symbol sc "<->"
+    --     target <- parseLocalName
+    --     return $ EdgeUndirected source target
     parseUndirectedEdge = label "edge" $ do
         source <- parseLocalName
         symbol sc "<->"
         target <- parseLocalName
-        return $ EdgeUndirected source target
+        return $ [Edge source target, Edge target source]
     parseEdge = label "edge" $ do
         source <- parseLocalName
         symbol sc "->"
         target <- parseLocalName
-        return $ Edge source target
+        return $ [Edge source target]
     parseType = fmap T.pack . lexeme sc $ (:) <$> lowerChar <*> many alphaNumChar
     -- parseScopedName :: ReaderT [Sugar] (Parsec Void Text) ScopedName
-    parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> (try $ FullWildcard <$ symbol sc "**") <|> parseLocalName
+    --parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> (try $ FullWildcard <$ symbol sc "**") <|> parseLocalName --wildcards are no longer a thing
+    parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> parseLocalName
     -- parseLocalName :: ReaderT [Sugar] (Parsec Void Text) ScopedName
     parseLocalName = (lexeme sc $ Scoped <$> (parseName' `sepBy1` char '.'))
     -- parseName :: ReaderT [Sugar] (Parsec Void Text) Name
     parseName = lexeme sc parseName' <?> "name"
     -- parseName' :: ReaderT [Sugar] (Parsec Void Text) Name
-    parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar)) <|> (Wildcard <$ char '*')
+    --parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar)) <|> (Wildcard <$ char '*') --wildcards are no longer a thing
+    parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar))
     -- possiblyEscapedChar :: ReaderT [Sugar] (Parsec Void Text) Char
     possiblyEscapedChar = do
         c <- satisfy (/= '"')
@@ -122,8 +144,9 @@ logicParser scopes = many $ nonIndented scn $ parseTree (getScopes scopes) where
             _ -> return c
     -- parseMode :: ReaderT [Sugar] (Parsec Void Text) Mode
     parseMode = lexeme sc $ label "mode" $ (ModeDefault <$ char ':') <|> (ModeAppend <$ string "+:") <|> (ModeReplace <$ string "!:")
+                                              <|> (ModeAppendIfExists <$ string "+?:") <|> (ModeReplaceIfExists <$ string "!?:") <|> (ModeReplaceOrCreate <$ string "!+:")
     -- inlineChildren :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) Forest
-    inlineChildren scopes = label "inlined Childen" $ inlineChild scopes `sepBy1` (symbol sc ",")
+    inlineChildren scopes = fmap concat $ label "inlined Childen" $ inlineChild scopes `sepBy1` (symbol sc ",")
     -- inlineChild :: [ScopeName] -> ReaderT [Sugar] (Parsec Void Text) Tree
     inlineChild [] = parseSugarOpList <|> inlineChild' []
     inlineChild scopes = inlineChild' scopes
@@ -134,8 +157,10 @@ logicParser scopes = many $ nonIndented scn $ parseTree (getScopes scopes) where
             m <- parseMode
             c <- (inlineChildren $ drop 1 scopes)
             return (m,c)
-        return $ Node v m c
+        return $ fmap (\v' -> Node v' m c) v
         )
     -- parseSugarOpList :: ReaderT [Sugar] (Parsec Void Text) Tree
     parseSugarOpList = ask >>= choice . fmap (\(SugarOpList name sep) -> try $
-        between (symbol sc "(") (symbol sc ")") $ Node (Anon name) ModeDefault <$> inlineChild [] `sepBy` (symbol sc sep))
+        between (symbol sc "(") (symbol sc ")") $ fmap (Node (Anon name) ModeDefault) <$> inlineChild [] `sepBy` (symbol sc sep)) . filter (\case
+            SugarOpList _ _ -> True
+            _ -> False)

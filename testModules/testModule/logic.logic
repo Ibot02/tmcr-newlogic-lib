@@ -2,7 +2,7 @@ area Spawn:
     room Spawn:
         node Spawn:
             spawn
-            set "Test"
+            set "vTest"
         node Extra1
         Spawn -> Extra1:
-            flag "Test"
+            flag "vTest"

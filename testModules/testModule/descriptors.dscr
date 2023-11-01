@@ -1,4 +1,4 @@
-flag Name:
-    [set Name].
+flag vName:
+    [set vName].
 
 spawn: true.

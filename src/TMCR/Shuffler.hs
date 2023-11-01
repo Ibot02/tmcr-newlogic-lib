@@ -98,7 +98,7 @@ data Eval m (v :: DescriptorType -> *) = Eval {
     }
 
 data Definitions = Definitions {
-                     _definedEdges :: TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe LogicNodeName)
+                     _definedEdges :: TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe LogicNodeName)
                    , _definedLogicNodes :: Map LogicNodeName [(DescriptorName, [Thingy])]
                    , _descriptorDeclarations :: Map DescriptorName DescriptorDeclaration
                    , _truthyDescriptorDefinitions :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
@@ -134,7 +134,7 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
             t <- case source of 
                 Just source -> askLogicNodeAccess source
                 Nothing -> evalConstant eval $ TruthyLiteral OolTrue
-            t' <- fmap (getJoin . foldMap Join) $ forM (S.toList $ getDisjunctions edge) $ \clause ->
+            t' <- fmap (getJoin . foldMap Join) $ forM (S.toList $ getDisjunctions $ getJoin edge) $ \clause ->
                     fmap (getMeet . foldMap Meet) $ forM (S.toList clause) $ \(descName, args) ->
                         askTruthyDescriptor (TruthyDescriptorIdent descName) args
             evalSequence eval t t'

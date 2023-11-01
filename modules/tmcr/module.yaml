@@ -1,0 +1,18 @@
+name: tmcr
+version: '1.0'
+syntax-version: '0.1'
+dependencies:
+  - [basicDefinitions, ">= 1.0, < 2.0"]
+  - [tmc, ">= 1.0, < 2.0"]
+soft-dependency: []
+provides:
+  descriptors: {}
+  logic-sugar: {}
+  descriptor-definitions:
+    - descriptors.dscr
+  logic:
+    - "logic/*.logic"
+  shuffles: []
+  data:
+    - "logic/*.json"
+  patches: []

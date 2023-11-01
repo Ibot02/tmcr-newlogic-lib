@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
 module TMCR.Module where
 
 import Data.Text (Text())
@@ -16,8 +17,7 @@ import Data.Aeson
       withText,
       camelTo2,
       defaultOptions,
-      Options(constructorTagModifier, fieldLabelModifier,
-              omitNothingFields, rejectUnknownFields) )
+      Options(..) )
 import Data.Aeson.TH
 import Data.Char
 
@@ -37,21 +37,23 @@ import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
 
 import Control.Lens.TH
-import TMCR.Logic.Logic (Forest)
+import Control.Lens (lens, iso, from, (&), (.~), (^.), Lens, Iso)
+import TMCR.Logic.Logic (Forest, Sugar(..))
 import TMCR.Logic.Data (LogicData')
 import TMCR.Logic.Shuffle (ShuffleStatement)
 import TMCR.Logic.Descriptor
 import Data.Dependent.Map (DMap)
 
-data Module = Module {
+data Module a = Module {
       _moduleName :: Text
     , _moduleVersion :: Version
     , _moduleSyntaxVersion :: Version
     , _moduleDependencies :: [(Text, VersionSpec)]
     , _moduleSoftDependency :: [(Text, VersionSpec)]
-    , _moduleProvides :: ModuleContent
+    , _moduleProvides :: a
     } deriving (Eq, Ord, Show)
 
+{-
 data ModuleFull = ModuleFull {
       _moduleFullName :: Text
     , _moduleFullVersion :: Version
@@ -59,6 +61,7 @@ data ModuleFull = ModuleFull {
     , _moduleFullSoftDependency :: [(Text, VersionSpec)]
     , _moduleFullProvides :: ModuleFullContent
     }
+-}
 
 newtype Version = Version { getVersion :: [Int] } deriving (Eq, Ord, Show)
 
@@ -67,8 +70,9 @@ data VersionSpec = VersionSpecRange (Maybe Version) (Maybe Version) deriving (Eq
 versionMatches :: VersionSpec -> Version -> Bool
 versionMatches (VersionSpecRange minV maxV) v = maybe True (<= v) minV && maybe True (v <) maxV
 
-data ModuleContent = ModuleContent {
-      _moduleContentDescriptors :: Map DescriptorName DescriptorDeclaration
+data ModuleContent = ModuleContent
+    { _moduleContentDescriptors :: Map DescriptorName DescriptorDeclaration
+    , _moduleContentLogicSugar :: Map Text SugarDefinition
     , _moduleContentDescriptorDefinitions :: [ResourceSpecifier]
     , _moduleContentLogic :: [ResourceSpecifier]
     , _moduleContentPatches :: [ResourceSpecifier]
@@ -76,9 +80,26 @@ data ModuleContent = ModuleContent {
     , _moduleContentShuffles :: [ResourceSpecifier]
     } deriving (Eq, Ord, Show)
 
+data SugarDefinition = SugarDefinitionOperator { _sugarOperatorReplacement :: Text }
+                     | SugarDefinitionMulti    { _sugarMultiExpandsTo :: [Text] }
+                     deriving (Eq, Ord, Show)
+
+
+data ModuleHeader = ModuleHeader
+    { _moduleHeaderDescriptors :: Map DescriptorName DescriptorDeclaration
+    , _moduleHeaderLogicSugar :: [Sugar]
+    } deriving (Eq, Ord, Show)
+
+data ModulePreparedContent = ModulePreparedContent {
+      _modulePreparedContentDescriptorDefinitions :: [Text]
+    , _modulePreparedContentLogic :: [Text]
+    , _modulePreparedContentPatches :: [Text]
+    , _modulePreparedContentData :: [Text]
+    , _modulePreparedContentShuffles :: [Text]
+    } deriving (Eq, Ord, Show)
+
 data ModuleFullContent = ModuleFullContent {
-      _moduleFullContentDescriptors :: Map DescriptorName DescriptorDeclaration
-    , _moduleFullContentDescriptorDefinitions :: DMap DescriptorIdent Descriptors
+      _moduleFullContentDescriptorDefinitions :: DMap DescriptorIdent Descriptors
     , _moduleFullContentLogic :: [Forest]
     , _moduleFullContentPatches :: [ResourceSpecifier]
     , _moduleFullContentData :: [LogicData']
@@ -123,10 +144,31 @@ parseVersion = fmap Version $ flip MP.sepBy (MP.single '.') $ do
     ns <- some MP.digitChar
     return $ read ns
 
+#if MIN_VERSION_aeson(1,5,0)
+$(deriveJSON defaultOptions{ sumEncoding = (TaggedObject "type" ""), constructorTagModifier = (camelTo2 '-' . drop (T.length "SugarDefinition")), fieldLabelModifier = (\s -> camelTo2 '-' $ head $ ["_sugarOperator", "_sugarMulti"] >>= (\p -> let l = length p in if p == take l s then [drop l s] else [])), omitNothingFields = True, rejectUnknownFields = True} ''SugarDefinition)
 $(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_moduleContent"), omitNothingFields = True, rejectUnknownFields = True} ''ModuleContent)
 $(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_module"), omitNothingFields = True, rejectUnknownFields = True} ''Module)
+#else
+$(deriveJSON defaultOptions{ sumEncoding = (TaggedObject "type" ""), constructorTagModifier = (camelTo2 '-' . drop (T.length "SugarDefinition")), fieldLabelModifier = (\s -> camelTo2 '-' $ head $ ["_sugarOperator", "_sugarMulti"] >>= (\p -> let l = length p in if p == take l s then [drop l s] else [])), omitNothingFields = True} ''SugarDefinition)
+$(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_moduleContent"), omitNothingFields = True} ''ModuleContent)
+$(deriveJSON defaultOptions{ fieldLabelModifier = camelTo2 '-' . drop (T.length "_module"), omitNothingFields = True} ''Module)
+#endif
 $(makeLenses ''Module)
 $(makeLenses ''ModuleContent)
-$(makeLenses ''ModuleFull)
+$(makeLenses ''ModuleHeader)
 $(makeLenses ''ModuleFullContent)
 $(makePrisms ''Version)
+
+moduleContentHeader :: Lens ModuleContent ModuleContent ModuleHeader ModuleHeader
+moduleContentHeader = lens get set where
+    get m = ModuleHeader (m ^. moduleContentDescriptors) (m ^. moduleContentLogicSugar . sugars)
+    set m (ModuleHeader descrs sugar) = m & moduleContentDescriptors .~ descrs & moduleContentLogicSugar . sugars .~ sugar
+
+sugars :: Iso (Map Text SugarDefinition) (Map Text SugarDefinition) [Sugar] [Sugar]
+sugars = iso f g where
+    f = Map.foldlWithKey (\a k d -> f' k d : a) []
+    f' t (SugarDefinitionOperator t') = SugarOpList t' t
+    f' t (SugarDefinitionMulti t') = SugarMulti t' t
+    g = Map.unions . fmap g'
+    g' (SugarOpList v k) = Map.singleton k $ SugarDefinitionOperator v
+    g' (SugarMulti v k) = Map.singleton k $ SugarDefinitionMulti v

@@ -29,8 +29,8 @@ instance Lattice Bool where
     bottom = False
     top = True
 
-newtype Meet a = Meet { getMeet :: a }
-newtype Join a = Join { getJoin :: a }
+newtype Meet a = Meet { getMeet :: a } deriving (Eq, Ord, Show)
+newtype Join a = Join { getJoin :: a } deriving (Eq, Ord, Show)
 
 instance (Lattice a) => Semigroup (Meet a) where
     Meet a <> Meet b = Meet $ meet a b

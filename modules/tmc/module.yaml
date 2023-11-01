@@ -1,0 +1,31 @@
+name: tmc
+version: '1.0'
+syntax-version: '0.1'
+dependencies:
+  - [basicDefinitions, ">= 1.0, < 2.0"]
+soft-dependency: []
+provides:
+  descriptors:
+    npc:
+      arguments:
+        - scoped
+      stateful: false
+      type: truthy
+      export: target
+  logic-sugar:
+    entrance:
+      type: multi
+      expands-to:
+        - warp
+    exit:
+      type: multi
+      expands-to:
+        - target
+  descriptor-definitions:
+    - descriptors.dscr
+  logic:
+    - "logic/*.logic"
+  shuffles: []
+  data:
+    - "logic/*.json"
+  patches: []

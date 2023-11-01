@@ -39,6 +39,9 @@ import Data.GADT.Compare
 import Data.Coerce (coerce)
 import TMCR.Logic.Graphs (TaggedGraph, taggedEdge)
 import Control.Lens
+import Control.Comonad.Cofree (Cofree())
+import qualified Control.Comonad.Cofree as CF
+import qualified Control.Comonad.Trans.Cofree as CFT
 import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
 import Control.Lens.Extras
@@ -58,9 +61,11 @@ import TMCR.Logic.Shuffle (ShuffleStatement (..), ShuffleInstruction, ShuffleNam
 import TMCR.Module.Dependency
 import qualified Data.Text as T
 import TMCR.Logic.Algebra (DNF(..), singleToDNF, Meet(..), Join(..))
+import Data.Either (partitionEithers)
 
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
+    mergeSugarConflictError :: Text -> [[ModuleIdentifier]] -> m a
     errorDescriptorNotDeclared :: DescriptorName -> m a
     errorDescriptorArgsMismatch :: DescriptorName -> [Scoping] -> Int -> m a
     errorDescriptorTypeMismatch :: DescriptorName -> DescriptorType -> DescriptorType -> m a
@@ -75,12 +80,19 @@ class Monad m => MonadMerge m where
 
 -- Descriptor declarations have to be identical when defined in multiple modules
 
+
 mergeDescriptorDeclarations :: forall m. (MonadMerge m) => Map ModuleIdentifier (Map DescriptorName DescriptorDeclaration) -> m (Map DescriptorName DescriptorDeclaration)
-mergeDescriptorDeclarations defs = M.traverseWithKey merge $ fmap M.toList $ transpose defs where
-    merge :: DescriptorName -> [(ModuleIdentifier, DescriptorDeclaration)] -> m DescriptorDeclaration
+mergeDescriptorDeclarations = mergeMap mergeDescDeclError
+
+mergeSugar :: forall m. (MonadMerge m) => Map ModuleIdentifier (Map Text SugarDefinition) -> m (Map Text SugarDefinition)
+mergeSugar = mergeMap mergeSugarConflictError
+
+mergeMap :: forall m k v. (MonadMerge m, Ord k, Ord v) => (forall a. k -> [[ModuleIdentifier]] -> m a) -> Map ModuleIdentifier (Map k v) -> m (Map k v)
+mergeMap createError defs = M.traverseWithKey merge $ fmap M.toList $ transpose defs where
+    merge :: k -> [(ModuleIdentifier, v)] -> m v
     merge name xs = case M.toList $ M.fromListWith (<>) $ fmap (\(x,y) -> (y,[x])) xs of
         [] -> error "unreachable" --from the definition of transpose
-        xs@(_:_:_) -> mergeDescDeclError name $ fmap snd $ toList xs
+        xs@(_:_:_) -> createError name $ fmap snd $ toList xs --todo error messages
         [(x,_)] -> return x
 
 
@@ -229,7 +241,7 @@ mergeRecursively destruct wildcards reconstruct = f where
             fmap (concatMap destruct)
             i
 
-groupAndWildcards :: (Ord i) => (i -> j -> Bool) -> [(ModuleIdentifier, L.Mode, Either i j, a)] -> Map i [(ModuleIdentifier, L.Mode, a)]
+groupAndWildcards :: (Ord i, Ord m) => (i -> j -> Bool) -> [(ModuleIdentifier, m, Either i j, a)] -> Map i [(ModuleIdentifier, m, a)]
 groupAndWildcards wildcards = fmap reverse . fst . foldl (\(m,w) (moduleIdent, mode, ident, val) -> case ident of
     Left ident ->
         let newVal = (moduleIdent, mode, val)
@@ -238,7 +250,144 @@ groupAndWildcards wildcards = fmap reverse . fst . foldl (\(m,w) (moduleIdent, m
     Right wildcard -> (M.mapWithKey (\ident xs -> if wildcards ident wildcard then (moduleIdent, mode, val) : xs else xs) m, (moduleIdent, mode, wildcard, val) : w)
     ) (M.empty, [])
 
---todo: fix
+resolveConflicts' :: (MonadMerge m) => (Map ModuleIdentifier [a] -> m (b, Bool)) -> [(ModuleIdentifier, L.Mode, a)] -> m (b, Bool)
+resolveConflicts' = undefined
+
+-- mergeRecursively' :: forall m a i j b. (MonadMerge m) => (a -> [(L.Mode, Either i j, a)]) -> (i -> Bool) -> (i -> j -> Bool) -> ([(i,b)] -> b) -> Map ModuleIdentifier [a] -> m b
+-- mergeRecursively' deconstruct mayMultiDefine wildcards reconstruct = f where
+--     f i = fmap reconstruct $
+--             traverse (resolveConflicts' f) $ b i --todo
+--     b :: Map ModuleIdentifier [a] -> Map i [(ModuleIdentifier, L.Mode, a)] -- Compose (Map ModuleIdentifier) [] ~> Compose (Map i) (Compose [] (ModuleIdentifier, L.Mode, ))
+--     b i = groupAndWildcards' wildcards $
+--             M.toList $
+--             fmap (concatMap destruct) i
+
+data CreationRole = NewDecl | Modify | ModifyIfExists | Append | Override | OverrideOrCreate | AppendIfExists | OverrideIfExists
+
+remainEmpty NewDecl = False
+remainEmpty Modify = False
+remainEmpty ModifyIfExists = True
+remainEmpty Append = False
+remainEmpty Override = False
+remainEmpty OverrideOrCreate = False
+remainEmpty AppendIfExists = True
+remainEmpty OverrideIfExists = True
+
+createsStuff NewDecl = True
+createsStuff Modify = False
+createsStuff ModifyIfExists = False
+createsStuff Append = False
+createsStuff Override = False
+createsStuff OverrideOrCreate = True
+createsStuff AppendIfExists = False
+createsStuff OverrideIfExists = False
+
+isOverride NewDecl = True
+isOverride Modify = False
+isOverride ModifyIfExists = False
+isOverride Append = False
+isOverride Override = True
+isOverride OverrideOrCreate = True
+isOverride AppendIfExists = False
+isOverride OverrideIfExists = True
+
+isModify NewDecl = False
+isModify Modify = True
+isModify ModifyIfExists = True
+isModify Append = False
+isModify Override = False
+isModify OverrideOrCreate = False
+isModify AppendIfExists = False
+isModify OverrideIfExists = False
+
+isNewDecl NewDecl = True
+isNewDecl Modify = False
+isNewDecl ModifyIfExists = False
+isNewDecl Append = False
+isNewDecl Override = False
+isNewDecl OverrideOrCreate = False
+isNewDecl AppendIfExists = False
+isNewDecl OverrideIfExists = False
+
+resolveOverrides :: (MonadMerge m) => [(ModuleIdentifier, Bool, a)] -> m [(ModuleIdentifier, a)]
+resolveOverrides xs = do
+    (x, y) <- findLast $ fmap (\(a,b,c) -> (a,c)) $ filter (^. _2) xs
+    ((x,y):) <$> restrictLaterThan x xs
+
+resolveNewdecls :: (MonadMerge m) => [(ModuleIdentifier, Bool, a)] -> m [(ModuleIdentifier, a)]
+resolveNewdecls xs = 
+    case (filter (^. _2) xs) of
+        [] -> errorUnexpectedLogicStructure
+        [(x,_,y)] -> do
+            dependencies <- dependencies
+            if all (\(x',b,_) -> b || dependsOn dependencies x' x) xs then return [(x,y) | (x,_,y) <- xs]
+            else errorUnexpectedLogicStructure
+        _ -> errorUnexpectedLogicStructure
+
+merge1 :: (MonadMerge m, Ord i) => [(ModuleIdentifier, CreationRole, [(i, r)])] -> m (Map i [(ModuleIdentifier, r)]) --allow one newdecl, appends, modifys and overrides
+merge1 stuff =
+    if | all (^. _2 . to remainEmpty) stuff -> return M.empty
+       | any (^. _2 . to createsStuff) stuff -> do
+            remainingStuff <- resolveOverrides $ [(moduleId, isOverride role, (not $ isModify role, payload)) | (moduleId, role, payload) <- stuff]
+            let x = M.fromListWith (<>) [(key, [(moduleId, isAppendy, payload')]) | (moduleId, (isAppendy, payload)) <- remainingStuff, (key, payload') <- payload]
+            traverse resolveNewdecls x
+       | otherwise -> errorUnexpectedLogicStructure
+
+merge2 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m [r] --allow multiple newdecls, no appends, no modifys but overrides. Overrides conflict with newdecls when unordered
+merge2 stuff =
+    if | any (^. _2 . to (not . isOverride)) stuff -> errorUnexpectedLogicStructure
+       | all (^. _2 . to isNewDecl) stuff -> return $ stuff ^.. traverse . _3
+       | otherwise -> map snd <$> resolveOverrides [(moduleId, not (isNewDecl role), payload) | (moduleId, role, payload) <- stuff]
+
+determineCreationRole :: Tree'F L.Mode CreationRole -> CreationRole
+determineCreationRole (NodeF L.ModeDefault []) = NewDecl
+determineCreationRole (NodeF L.ModeDefault xs) | any isNewDecl xs = NewDecl
+                                               | all remainEmpty xs = ModifyIfExists
+                                               | otherwise = Modify
+determineCreationRole (NodeF L.ModeAppend _) = Append
+determineCreationRole (NodeF L.ModeReplace _) = Override
+determineCreationRole (NodeF L.ModeAppendIfExists _) = AppendIfExists
+determineCreationRole (NodeF L.ModeReplaceIfExists _) = OverrideIfExists
+determineCreationRole (NodeF L.ModeReplaceOrCreate _) = OverrideOrCreate
+
+determineCreationRoles :: Tree' (L.Value, L.Mode) -> Cofree (Tree'F (L.Value, L.Mode)) CreationRole
+determineCreationRoles = zygo f g where
+    f = determineCreationRole . (\(NodeF (_,a) b) -> NodeF a b)
+    g x = f (fmap fst x) CF.:< fmap snd x
+
+split :: (ModuleIdentifier, Cofree (Tree'F (L.Value, L.Mode)) CreationRole) -> (L.Value, Either (ModuleIdentifier, CreationRole, [(L.Value, Cofree (Tree'F (L.Value, L.Mode)) CreationRole)]) (ModuleIdentifier, CreationRole, Tree' L.Value))
+split (moduleId, role CF.:< t@(NodeF (val, _) r)) = (val, b) where
+    b = case val of
+        L.Edge _ _ -> Right c
+        L.EdgeUndirected _ _ -> Right c
+        _ -> Left (moduleId, role, [(val', r') | r'@(_ CF.:< NodeF (val', _) _) <- r])
+    c :: (ModuleIdentifier, CreationRole, Tree' L.Value)
+    c = (moduleId, role, fmap fst $ embed $ fmap (hoist (\(_ CFT.:< t') -> t')) t)
+
+mergeLogic' :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
+mergeLogic' = helper . fmap (concatMap (fmap determineCreationRoles)) where
+    helper :: (MonadMerge m) => Map ModuleIdentifier [Cofree (Tree'F (L.Value, L.Mode)) CreationRole] -> m (Forest' L.Value)
+    helper = fmap (fmap (uncurry Node) . M.toList) . traverse helper1 . M.fromListWith (<>) . fmap ((\(a,b) -> (a,[b])) . split) . concatMap (\(a,b) -> (,) a <$> b) . M.toList
+    helper1 :: (MonadMerge m) => [Either (ModuleIdentifier, CreationRole, [(L.Value, Cofree (Tree'F (L.Value, L.Mode)) CreationRole)]) (ModuleIdentifier, CreationRole, Tree' L.Value)] -> m (Forest' L.Value)
+    helper1 xs = case partitionEithers xs of
+        ([], rs) -> merge2 $ rs
+        (rs, []) -> do
+            xs <- merge1 $ rs
+            ys <- traverse (helper . M.fromListWith (<>) . fmap (\(a,b) -> (a,[b]))) xs
+            return $ uncurry Node <$> M.toList ys
+
+--_ :: [(ModuleIdentifier, CreationRole, a)] -> m [(CreationRole, a)]
+
+-- thing :: (Base f CreationRole -> CreationRole) -> ([(ModuleIdentifier, Base f (Cofree (Base f) CreationRole))] -> Base g (_)) -> Map ModuleIdentifier [f] -> g
+-- thing = undefined
+
+-- groupAndWildcards' :: (Ord b) => (i -> j -> Bool) -> [(ModuleIdentifier, b, Either i j, a)] -> Map i (Map (ModuleIdentifier, b) [a])
+-- groupAndWildcards' wildcards = conv . groupAndWildcards wildcards where
+--     conv :: (Ord a, Ord b, Ord c) => Map a [(b,c,d)] -> Map a (Map (b,c) [d])
+--     conv = fmap (\xs -> M.fromListWith (<>) [((a,b),[c]) | (a,b,c) <- xs])
+    --conv = fmap (M.fromListWith (<>)) . M.fromListWith (<>) . (\x -> [(a,[((c, b),[d])]) | (a,bcds) <- x, (b,c,d) <- bcds]) . M.toList
+
+--todo: fix???
 mergeLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier [Forest] -> m (Forest' L.Value)
 mergeLogic descriptors sources = traverse (traverse $ fullyScopeNames descriptors . directEdges . generalizeForest) sources >>= f where
     f :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
@@ -318,14 +467,15 @@ prependRev [] x = x
 prependRev (x:xs) y = prependRev xs $ x:y
 
 
-transformLogic :: forall m. (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
-transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest where
-    f :: Tree' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
-    f (Node (L.NamedScoping _ _) forest) = Data.Foldable.fold <$> traverse f forest
-    f (Node (L.NamedScoped "node" logicNodeName) forest) = Data.Foldable.fold <$> traverse (nodeDescr logicNodeName) forest
-    f (Node (L.Edge source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target)) <$> ((getJoin . foldMap Join) <$> traverse descrRule desc) <*> pure M.empty
+transformLogic :: forall m. (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
+transformLogic descriptors forest = g <$> traverse f forest where
+    g = (foldr (\(g, m) (g', m') -> (g <> g', M.unionWith (<>) m m')) (mempty, mempty))
+    f :: Tree' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
+    f (Node (L.NamedScoping _ _) forest) = g <$> traverse f forest
+    f (Node (L.NamedScoped "node" logicNodeName) forest) = g <$> traverse (nodeDescr logicNodeName) forest
+    f (Node (L.Edge source target) desc) = ((,)) . (\e -> taggedEdge (Join e) (Just source) (Just target)) <$> ((getMeet . foldMap Meet) <$> traverse descrRule desc) <*> pure M.empty
     --f (Node (L.EdgeUndirected source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target) <> taggedEdge e (Just target) (Just source)) <$> ((getJoin . foldMap Join) <$> traverse descrRule desc) <*> pure M.empty --cleared out in mergeLogic
-    nodeDescr :: L.LogicNodeName -> Tree' L.Value -> m (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
+    nodeDescr :: L.LogicNodeName -> Tree' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     nodeDescr name (Node (L.Anon descr) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
         Just def -> do
@@ -336,8 +486,8 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
                 Nothing -> errorDescriptorNotDeclared descr --todo, make this go away while parsing the module or merging
                 Just DescriptorExportNone -> errorDescriptorNotDeclared descr
                 Just DescriptorExportEdge -> errorDescriptorNotDeclared descr
-                Just DescriptorExportSelfEdge -> return (taggedEdge (singleToDNF (descr, [])) (Just name) (Just name), mempty)
-                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (singleToDNF (descr, [])) Nothing (Just name), mempty)
+                Just DescriptorExportSelfEdge -> return (taggedEdge (Join $ singleToDNF (descr, [])) (Just name) (Just name), mempty)
+                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (Join $ singleToDNF (descr, [])) Nothing (Just name), mempty)
                 Just DescriptorExportTarget -> return (mempty, M.singleton name [(descr,[])])
     nodeDescr name (Node (L.NamedScoped descr arg) xs) = case M.lookup descr descriptors of
         Nothing -> errorDescriptorNotDeclared descr
@@ -349,8 +499,8 @@ transformLogic descriptors forest = Data.Foldable.fold <$> traverse f forest whe
                 Nothing -> errorDescriptorNotDeclared descr --todo, make this go away while parsing the module or merging
                 Just DescriptorExportNone -> errorDescriptorNotDeclared descr
                 Just DescriptorExportEdge -> errorDescriptorNotDeclared descr
-                Just DescriptorExportSelfEdge -> return (taggedEdge (singleToDNF (descr, [nonWildcardScopedName arg])) (Just name) (Just name), mempty)
-                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (singleToDNF (descr, [nonWildcardScopedName arg])) Nothing (Just name), mempty)
+                Just DescriptorExportSelfEdge -> return (taggedEdge (Join $ singleToDNF (descr, [nonWildcardScopedName arg])) (Just name) (Just name), mempty)
+                Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (Join $ singleToDNF (descr, [nonWildcardScopedName arg])) Nothing (Just name), mempty)
                 Just DescriptorExportTarget -> return (mempty, M.singleton name [(descr,[nonWildcardScopedName arg])])
     nodeDescr _ _ = errorUnexpectedLogicStructure
     descrRule :: (MonadMerge m) => Tree' L.Value -> m (DNF (DescriptorName, [Thingy]))
@@ -436,7 +586,7 @@ data GameDef = GameDef {
       _defDescriptors :: Map DescriptorName DescriptorDeclaration
     , _defDescriptorDefinitionsTruthy :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
     , _defDescriptorDefinitionsCounty :: Map (DescriptorIdent County) [Descriptor County]
-    , _defLogic :: (TaggedGraph (DNF (DescriptorName, [Thingy])) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
+    , _defLogic :: (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     , _defPatches :: Map ModuleIdentifier (FilePath, [ResourceSpecifier])
     , _defLogicData :: LogicData
     , _defShuffles :: Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
@@ -444,9 +594,17 @@ data GameDef = GameDef {
 
 $(makeLenses ''GameDef)
 
-mergeContent :: (MonadMerge m) => Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
-mergeContent modules = do
-    descriptors <- mergeDescriptorDeclarations $ fmap (^. _2 . moduleFullContentDescriptors) modules
+mergeHeader :: (MonadMerge m) => Map ModuleIdentifier ModuleHeader -> m ModuleHeader
+mergeHeader headers = do
+    descrs <- mergeDescriptorDeclarations $ fmap (^. moduleHeaderDescriptors) headers
+    sugar <- mergeSugar $ fmap (^. moduleHeaderLogicSugar . from sugars) headers
+    return $ ModuleHeader descrs (sugar ^. sugars)
+
+
+mergeContent :: (MonadMerge m) => ModuleHeader -> Map ModuleIdentifier (FilePath, ModuleFullContent) -> m GameDef
+mergeContent header modules = do
+    let descriptors = header ^. moduleHeaderDescriptors
+    --mergeDescriptorDeclarations $ fmap (^. _2 . moduleFullContentDescriptors) modules
     descriptorDefs <- mergeDescriptorDefinitions () descriptors $ fmap (^. _2 . moduleFullContentDescriptorDefinitions) modules
     logic <- do
         l <- mergeLogic descriptors $ fmap (^. _2 . moduleFullContentLogic) modules
