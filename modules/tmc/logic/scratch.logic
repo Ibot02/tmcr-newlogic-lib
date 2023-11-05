@@ -3,9 +3,6 @@ area Test:
   node A: spawn
   node B
   A -> B :
-    (item A && item C)
+    item A
+    item C
   A -> B : item B
-
-area Test:
- room Test:
-  A -> B: item D

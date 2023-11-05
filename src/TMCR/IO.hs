@@ -32,7 +32,7 @@ import TMCR.Logic.Descriptor
 import Data.Maybe (catMaybes, maybeToList)
 import TMCR.Logic.Merge (MonadMerge (..), GameDef, mergeDescriptorDeclarations, mergeHeader, mergeContent)
 import Control.Lens
-import TMCR.Module.Dependency (makeModuleDependencyInfo)
+import TMCR.Module.Dependency (makeModuleDependencyInfo, ModuleDependencyInfo, DependencyError, singleModuleDependencies)
 import qualified Data.Map as M
 
 import Polysemy
@@ -282,19 +282,25 @@ readGameDefStrErr sources = joinErrorTextPrefix @ParseException "ParseException:
 
 readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
 readGameDef sources = do
-    xs <- forM sources $ \path -> inSubdirs path $ \path -> do
+    xs <- fmap concat $ forM sources $ \path -> inSubdirs path $ \path -> do
         m <- readModule
         return (path, m)
     content <- M.traverseWithKey (\k -> \case
         [] -> error "unreachable"
         [x] -> return x
-        _ -> throw $ MergeErrorModuleMultipleDefine k) $ M.fromListWith (<>) $ fmap (\(path, m) -> (m ^. moduleName, [(path, m ^. moduleProvides)])) $ concat xs
-    header <- mergeHeader $ fmap (view $ _2 . moduleContentHeader) content
-    content' <- forM content $ \(path, m) -> do
-        c <- inSubdirs path $ \_ -> readModuleFullContent (m & moduleContentHeader .~ header)
-        let [c'] = c
-        return (path, c')
-    mergeContent header content'
+        _ -> throw $ MergeErrorModuleMultipleDefine k) $ M.fromListWith (<>) $ fmap (\(path, m) -> (m ^. moduleName, [(path, m ^. moduleProvides)])) $ xs
+    deps <- do
+        let depInfo = fmap (singleModuleDependencies . snd) xs
+        case makeModuleDependencyInfo depInfo of
+            Left err -> throw $ MergeErrorDependencies err
+            Right deps -> return deps
+    runReader @ModuleDependencyInfo deps $ do
+        header <- mergeHeader $ fmap (view $ _2 . moduleContentHeader) content
+        content' <- forM content $ \(path, m) -> do
+            c <- inSubdirs path $ \_ -> readModuleFullContent (m & moduleContentHeader .~ header)
+            let [c'] = c
+            return (path, c')
+        mergeContent header content'
 
 inSubdirs :: forall r a. (Member WithDirectory r) => FilePath -> (FilePath -> Sem r a) -> Sem r [a]
 inSubdirs p a = inSubdirs' a $ splitPath p where
@@ -327,10 +333,12 @@ readModule = withSingleFile "module.yaml" $ \path content -> do
 newtype AssertionFailed = AssertionFailed { getAssertionName :: Text } deriving (Eq, Ord, Show)
 
 data MergeError = MergeErrorModuleMultipleDefine Text
+                | MergeErrorDependencies [DependencyError]
                 | MergeErrorOther Text
+                | MergeErrorContext Text MergeError
                 deriving (Eq, Ord, Show)
 
-instance (Member (Error MergeError) r) => MonadMerge (Sem r) where
+instance (Member (Error MergeError) r, Member (Reader ModuleDependencyInfo) r) => MonadMerge (Sem r) where
     mergeDescDeclError name _ = throw $ MergeErrorOther $ "Descriptor " <> name <> " has conflicting definitions"
     mergeSugarConflictError name _ = throw $ MergeErrorOther $ "Sugar " <> name <> " has conflicting definitions"
     errorDescriptorNotDeclared name = throw $ MergeErrorOther $ "Descriptor " <> name <> " is missing a declaration"
@@ -341,7 +349,9 @@ instance (Member (Error MergeError) r) => MonadMerge (Sem r) where
     mergeErrorUnresolvedOrderingOverwrite name1 name2 = throw $ MergeErrorOther $ "Cannot order " <> name1 <> " and " <> name2 <> ". Maybe you forgot to add an (optional) dependency?"
     errorUnexpectedLogicStructure = throw $ MergeErrorOther $ "Unexpected Logic Structure. I know as much about what is wrong as you do"
     errorLogicDataMergeConflict stuff = throw $ MergeErrorOther $ "Failed to merge Logic Data: " <> T.pack (show stuff)
-    dependencies = return ()
+    errorGenericMergeError num = throw $ MergeErrorOther $ "Generic Merge Error " <> T.pack (show num)
+    errorContext descr act = act `catch` (throw . MergeErrorContext descr)
+    dependencies = ask
     warningIgnoredLogicSubtree _ = return ()
 
 readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error (ParseErrorBundle Text Void)] r) => ModuleContent -> Sem r ModuleFullContent

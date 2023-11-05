@@ -75,7 +75,9 @@ class Monad m => MonadMerge m where
     mergeErrorUnresolvedOrderingOverwrite :: ModuleIdentifier -> ModuleIdentifier -> m a
     errorUnexpectedLogicStructure :: m a
     errorLogicDataMergeConflict :: [([(Text, Int)],Text)] -> m a
+    errorGenericMergeError :: Int -> m a
     dependencies :: m ModuleDependencyInfo
+    errorContext :: Text -> m a -> m a
     --
 
 -- Descriptor declarations have to be identical when defined in multiple modules
@@ -200,14 +202,14 @@ area A:
 -}
 
 findLast :: (MonadMerge m) => [(ModuleIdentifier, a)] -> m (ModuleIdentifier, a)
-findLast overwrites = do
+findLast overwrites = errorContext "findLast" $ do
     dependencies <- dependencies
     let ((candidate, value):_) = reverse $ dependencyOrder dependencies overwrites
     case filter (\(c', _) -> candidate /= c' && not (dependsOn dependencies candidate c')) overwrites of
         [] -> return (candidate, value)
         ((x,_):_) -> mergeErrorUnresolvedOrderingOverwrite x candidate
 restrictLaterThan :: (MonadMerge m) => ModuleIdentifier -> [(ModuleIdentifier, a, b)] -> m [(ModuleIdentifier, b)]
-restrictLaterThan o = fmap catMaybes . traverse (\(m,_,v) -> do
+restrictLaterThan o = fmap catMaybes . traverse (\(m,_,v) -> errorContext "restrictLaterThan" $ do
     dependencies <- dependencies
     if
         | o == m -> return $ Nothing
@@ -315,27 +317,27 @@ resolveOverrides xs = do
     ((x,y):) <$> restrictLaterThan x xs
 
 resolveNewdecls :: (MonadMerge m) => [(ModuleIdentifier, Bool, a)] -> m [(ModuleIdentifier, a)]
-resolveNewdecls xs = 
+resolveNewdecls xs = errorContext "resolveNewdecls" $
     case (filter (^. _2) xs) of
-        [] -> errorUnexpectedLogicStructure
+        [] -> errorGenericMergeError 1
         [(x,_,y)] -> do
             dependencies <- dependencies
             if all (\(x',b,_) -> b || dependsOn dependencies x' x) xs then return [(x,y) | (x,_,y) <- xs]
-            else errorUnexpectedLogicStructure
-        _ -> errorUnexpectedLogicStructure
+            else errorGenericMergeError 2
+        _ -> errorGenericMergeError 3
 
-merge1 :: (MonadMerge m, Ord i) => [(ModuleIdentifier, CreationRole, [(i, r)])] -> m (Map i [(ModuleIdentifier, r)]) --allow one newdecl, appends, modifys and overrides
-merge1 stuff =
-    if | all (^. _2 . to remainEmpty) stuff -> return M.empty
+merge1 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m [(ModuleIdentifier, r)] --allow one newdecl, appends, modifys and overrides
+merge1 stuff = errorContext "merge1" $
+    if | all (^. _2 . to remainEmpty) stuff -> return []
        | any (^. _2 . to createsStuff) stuff -> do
-            remainingStuff <- resolveOverrides $ [(moduleId, isOverride role, (not $ isModify role, payload)) | (moduleId, role, payload) <- stuff]
-            let x = M.fromListWith (<>) [(key, [(moduleId, isAppendy, payload')]) | (moduleId, (isAppendy, payload)) <- remainingStuff, (key, payload') <- payload]
-            traverse resolveNewdecls x
-       | otherwise -> errorUnexpectedLogicStructure
+            resolveOverrides $ [(moduleId, isOverride role, payload) | (moduleId, role, payload) <- stuff]
+            -- let x = M.fromListWith (<>) [(key, [(moduleId, isAppendy, payload')]) | (moduleId, (isAppendy, payload)) <- remainingStuff, (key, payload') <- payload]
+            -- traverse resolveNewdecls x
+       | otherwise -> errorGenericMergeError 4
 
 merge2 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m [r] --allow multiple newdecls, no appends, no modifys but overrides. Overrides conflict with newdecls when unordered
-merge2 stuff =
-    if | any (^. _2 . to (not . isOverride)) stuff -> errorUnexpectedLogicStructure
+merge2 stuff = errorContext "merge2" $
+    if | any (^. _2 . to (not . isOverride)) stuff -> errorGenericMergeError 5
        | all (^. _2 . to isNewDecl) stuff -> return $ stuff ^.. traverse . _3
        | otherwise -> map snd <$> resolveOverrides [(moduleId, not (isNewDecl role), payload) | (moduleId, role, payload) <- stuff]
 
@@ -355,26 +357,25 @@ determineCreationRoles = zygo f g where
     f = determineCreationRole . (\(NodeF (_,a) b) -> NodeF a b)
     g x = f (fmap fst x) CF.:< fmap snd x
 
-split :: (ModuleIdentifier, Cofree (Tree'F (L.Value, L.Mode)) CreationRole) -> (L.Value, Either (ModuleIdentifier, CreationRole, [(L.Value, Cofree (Tree'F (L.Value, L.Mode)) CreationRole)]) (ModuleIdentifier, CreationRole, Tree' L.Value))
-split (moduleId, role CF.:< t@(NodeF (val, _) r)) = (val, b) where
+split :: (ModuleIdentifier, Cofree (Tree'F (L.Value, L.Mode)) CreationRole) -> (L.Value, Either (ModuleIdentifier, CreationRole, [Cofree (Tree'F (L.Value, L.Mode)) CreationRole]) (ModuleIdentifier, CreationRole, Forest' L.Value))
+split (moduleId, role CF.:< (NodeF (val, _) r)) = (val, b) where
     b = case val of
         L.Edge _ _ -> Right c
         L.EdgeUndirected _ _ -> Right c
-        _ -> Left (moduleId, role, [(val', r') | r'@(_ CF.:< NodeF (val', _) _) <- r])
-    c :: (ModuleIdentifier, CreationRole, Tree' L.Value)
-    c = (moduleId, role, fmap fst $ embed $ fmap (hoist (\(_ CFT.:< t') -> t')) t)
+        _ -> Left (moduleId, role, r)
+    c :: (ModuleIdentifier, CreationRole, Forest' L.Value)
+    c = (moduleId, role, fmap (fmap fst . hoist (\(_ CFT.:< t') -> t')) r)
 
 mergeLogic' :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
-mergeLogic' = helper . fmap (concatMap (fmap determineCreationRoles)) where
+mergeLogic' = errorContext "mergeLogic'" . helper . fmap (fmap determineCreationRoles . concat) where
     helper :: (MonadMerge m) => Map ModuleIdentifier [Cofree (Tree'F (L.Value, L.Mode)) CreationRole] -> m (Forest' L.Value)
-    helper = fmap (fmap (uncurry Node) . M.toList) . traverse helper1 . M.fromListWith (<>) . fmap ((\(a,b) -> (a,[b])) . split) . concatMap (\(a,b) -> (,) a <$> b) . M.toList
-    helper1 :: (MonadMerge m) => [Either (ModuleIdentifier, CreationRole, [(L.Value, Cofree (Tree'F (L.Value, L.Mode)) CreationRole)]) (ModuleIdentifier, CreationRole, Tree' L.Value)] -> m (Forest' L.Value)
-    helper1 xs = case partitionEithers xs of
-        ([], rs) -> merge2 $ rs
+    helper = fmap (concatMap snd . M.toList) . M.traverseWithKey (\k v -> errorContext ("helper1 on " <> (T.pack $ show k)) $ helper1 k v) . M.fromListWith (<>) . fmap ((\(a,b) -> (a,[b])) . split) . concatMap (\(a,b) -> (,) a <$> b) . M.toList
+    helper1 :: (MonadMerge m) => L.Value -> [Either (ModuleIdentifier, CreationRole, [Cofree (Tree'F (L.Value, L.Mode)) CreationRole]) (ModuleIdentifier, CreationRole, Forest' L.Value)] -> m (Forest' L.Value)
+    helper1 v xs = case partitionEithers xs of
+        ([], rs) -> fmap (fmap (Node v)) $ merge2 $ rs
         (rs, []) -> do
             xs <- merge1 $ rs
-            ys <- traverse (helper . M.fromListWith (<>) . fmap (\(a,b) -> (a,[b]))) xs
-            return $ uncurry Node <$> M.toList ys
+            fmap ((:[]) . Node v) $ helper $ M.fromListWith (<>) xs
 
 --_ :: [(ModuleIdentifier, CreationRole, a)] -> m [(CreationRole, a)]
 
@@ -387,9 +388,9 @@ mergeLogic' = helper . fmap (concatMap (fmap determineCreationRoles)) where
 --     conv = fmap (\xs -> M.fromListWith (<>) [((a,b),[c]) | (a,b,c) <- xs])
     --conv = fmap (M.fromListWith (<>)) . M.fromListWith (<>) . (\x -> [(a,[((c, b),[d])]) | (a,bcds) <- x, (b,c,d) <- bcds]) . M.toList
 
---todo: fix???
+--todo: appends to nothing don't error, multiple newdecls don't error (where not permitted)
 mergeLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier [Forest] -> m (Forest' L.Value)
-mergeLogic descriptors sources = traverse (traverse $ fullyScopeNames descriptors . directEdges . generalizeForest) sources >>= f where
+mergeLogic descriptors sources = errorContext "mergeLogic" $ traverse (traverse $ fullyScopeNames descriptors . directEdges . generalizeForest) sources >>= mergeLogic' where
     f :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
     f = mergeRecursively
             destruct
@@ -428,7 +429,7 @@ mergeLogic descriptors sources = traverse (traverse $ fullyScopeNames descriptor
 
 fullyScopeNames :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' (L.Value, L.Mode) -> m (Forest' (L.Value, L.Mode))
 --fullyScopeNames = traverse (topDownM (\((value, mode), scope) -> fmap (\(value', scope') -> ((value', mode), scope)) (scopeStep value scope )) [])
-fullyScopeNames descriptors = fullyScopeNames' [] where
+fullyScopeNames descriptors = errorContext "fullyScopeNames" . fullyScopeNames' [] where
     fullyScopeNames' :: (MonadMerge m) => [L.Name] -> Forest' (L.Value, L.Mode) -> m (Forest' (L.Value, L.Mode))
     fullyScopeNames' scope = traverse (fmap embed . (\(NodeF (val, mode) ys) -> do
             (val', scope') <- scopeStep descriptors val scope
@@ -437,7 +438,7 @@ fullyScopeNames descriptors = fullyScopeNames' [] where
         ) . project)
 
 scopeStep :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> L.Value -> [L.Name] -> m (L.Value, [L.Name])
-scopeStep descriptors value scope = case value of
+scopeStep descriptors value scope = errorContext "scopeStep" $ case value of
     L.NamedScoping _ s -> return (value, s:scope)
     L.NamedScoped "node" x -> do
         x' <- applyScope scope x
@@ -468,7 +469,7 @@ prependRev (x:xs) y = prependRev xs $ x:y
 
 
 transformLogic :: forall m. (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Forest' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
-transformLogic descriptors forest = g <$> traverse f forest where
+transformLogic descriptors forest = errorContext "transformLogic" $ g <$> traverse f forest where
     g = (foldr (\(g, m) (g', m') -> (g <> g', M.unionWith (<>) m m')) (mempty, mempty))
     f :: Tree' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     f (Node (L.NamedScoping _ _) forest) = g <$> traverse f forest
@@ -502,7 +503,7 @@ transformLogic descriptors forest = g <$> traverse f forest where
                 Just DescriptorExportSelfEdge -> return (taggedEdge (Join $ singleToDNF (descr, [nonWildcardScopedName arg])) (Just name) (Just name), mempty)
                 Just DescriptorExportEdgeFromBeyondTheVoid -> return (taggedEdge (Join $ singleToDNF (descr, [nonWildcardScopedName arg])) Nothing (Just name), mempty)
                 Just DescriptorExportTarget -> return (mempty, M.singleton name [(descr,[nonWildcardScopedName arg])])
-    nodeDescr _ _ = errorUnexpectedLogicStructure
+    nodeDescr _ _ = errorGenericMergeError 6
     descrRule :: (MonadMerge m) => Tree' L.Value -> m (DNF (DescriptorName, [Thingy]))
     descrRule (Node (L.Anon "and") xs) = (getMeet . foldMap Meet) <$> traverse descrRule xs --todo: forbid reserved names "and" and "or" to be declared as descriptors
     descrRule (Node (L.Anon "or") xs)  = (getJoin . foldMap Join) <$> traverse descrRule xs
@@ -524,7 +525,7 @@ transformLogic descriptors forest = g <$> traverse f forest where
             case def ^. descriptorDeclarationExport of
                 Just DescriptorExportEdge -> return $ singleToDNF $ (descr, [nonWildcardScopedName arg])
                 _ -> errorDescriptorNotDeclared descr
-    descrRule _ = errorUnexpectedLogicStructure
+    descrRule _ = errorGenericMergeError 7
 
 nonWildcardScopedName :: L.ScopedName -> PossiblyScopedName
 nonWildcardScopedName (L.Global n) = Global $ nonWildcardName n
