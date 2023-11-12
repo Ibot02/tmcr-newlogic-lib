@@ -326,14 +326,33 @@ resolveNewdecls xs = errorContext "resolveNewdecls" $
             else errorGenericMergeError 2
         _ -> errorGenericMergeError 3
 
-merge1 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m [(ModuleIdentifier, r)] --allow one newdecl, appends, modifys and overrides
+merge1 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m (Maybe [(ModuleIdentifier, r)]) --allow one newdecl, appends, modifys and overrides
 merge1 stuff = errorContext "merge1" $
-    if | all (^. _2 . to remainEmpty) stuff -> return []
+    if | all (^. _2 . to remainEmpty) stuff -> return Nothing
        | any (^. _2 . to createsStuff) stuff -> do
-            resolveOverrides $ [(moduleId, isOverride role, payload) | (moduleId, role, payload) <- stuff]
+            --resolveOverrides $ [(moduleId, isOverride role, payload) | (moduleId, role, payload) <- stuff]
+            (x, _) <- findLast $ fmap (\(a,b,c) -> (a,b)) $ filter (^. _2 . to isOverride) stuff
+            (before, same, after) <- split stuff x
+            case filter (\(a,b,c) -> isOverride b) same of
+                [(x, NewDecl, _)] | all (^. _2 . to remainEmpty) before -> return ()
+                                  | otherwise -> errorContext ("NewDecl with previous content: " <> T.pack (show x)) $ errorGenericMergeError 10
+                [(x, _, _)] -> return ()
+                _ -> errorContext ("Multiple overrides/declarations in module " <> T.pack (show x)) $ errorGenericMergeError 11
+            return $ Just $ fmap (\(a,b,c) -> (a,c)) $ same <> after
             -- let x = M.fromListWith (<>) [(key, [(moduleId, isAppendy, payload')]) | (moduleId, (isAppendy, payload)) <- remainingStuff, (key, payload') <- payload]
             -- traverse resolveNewdecls x
        | otherwise -> errorGenericMergeError 4
+                where
+                    split :: (MonadMerge m) => [(ModuleIdentifier, a,b)] -> ModuleIdentifier -> m ([(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)])
+                    split stuff x = errorContext "split" $ do
+                        dependencies <- dependencies
+                        split' dependencies stuff x ([],[],[])
+                    split' :: (MonadMerge m) => ModuleDependencyInfo -> [(ModuleIdentifier, a,b)] -> ModuleIdentifier -> ([(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)]) -> m ([(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)], [(ModuleIdentifier, a, b)])
+                    split' dependencies [] _ r = return r
+                    split' dependencies (y'@(y, _, _):stuff) x (prev, same, after) | dependsOn dependencies x y = split' dependencies stuff x (y':prev, same, after)
+                                                                                   | dependsOn dependencies y x = split' dependencies stuff x (prev, same, y':after)
+                                                                                   | y == x = split' dependencies stuff x (prev, y':same, after)
+                                                                                   | otherwise = mergeErrorUnresolvedOrderingOverwrite x y
 
 merge2 :: (MonadMerge m) => [(ModuleIdentifier, CreationRole, r)] -> m [r] --allow multiple newdecls, no appends, no modifys but overrides. Overrides conflict with newdecls when unordered
 merge2 stuff = errorContext "merge2" $
@@ -375,7 +394,10 @@ mergeLogic' = errorContext "mergeLogic'" . helper . fmap (fmap determineCreation
         ([], rs) -> fmap (fmap (Node v)) $ merge2 $ rs
         (rs, []) -> do
             xs <- merge1 $ rs
-            fmap ((:[]) . Node v) $ helper $ M.fromListWith (<>) xs
+            case xs of
+                Nothing -> return []
+                Just xs ->
+                    fmap ((:[]) . Node v) $ helper $ M.fromListWith (<>) xs
 
 --_ :: [(ModuleIdentifier, CreationRole, a)] -> m [(CreationRole, a)]
 
