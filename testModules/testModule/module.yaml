@@ -22,6 +22,11 @@ provides:
       stateful: false
       type: truthy
       export: edge-from-beyond-the-void
+    countyTarget:
+      arguments: []
+      stateful: false
+      type: county
+      export: target
     lock:
       arguments:
         - scoped

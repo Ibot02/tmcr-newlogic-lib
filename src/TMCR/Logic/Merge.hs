@@ -503,7 +503,7 @@ transformLogic descriptors forest = errorContext "transformLogic" $ g <$> traver
         Nothing -> errorDescriptorNotDeclared descr
         Just def -> do
             unless (def ^. descriptorDeclarationArguments . to null) $ errorDescriptorArgsMismatch descr (def ^. descriptorDeclarationArguments) 0
-            unless ((def ^. descriptorDeclarationType) == Truthy) $ errorDescriptorTypeMismatch descr County Truthy
+            -- unless ((def ^. descriptorDeclarationType) == Truthy) $ errorDescriptorTypeMismatch descr County Truthy
             unless (null xs) $ warningIgnoredLogicSubtree xs
             case def ^. descriptorDeclarationExport of
                 Nothing -> errorDescriptorNotDeclared descr --todo, make this go away while parsing the module or merging

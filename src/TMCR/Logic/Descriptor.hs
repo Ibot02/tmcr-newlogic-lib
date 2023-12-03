@@ -130,11 +130,19 @@ deriving instance Eq (Descriptor t)
 deriving instance Ord (Descriptor t)
 type ConsumeUUID = Int
 
+data SDescriptorType :: DescriptorType -> * where
+    STruthy :: SDescriptorType Truthy
+    SCounty :: SDescriptorType County
+
+deriving instance Show (SDescriptorType t)
+deriving instance Eq (SDescriptorType t)
+deriving instance Ord (SDescriptorType t)
+
 data DescriptorRule (t :: DescriptorType) where
     Constant :: Literal t -> DescriptorRule t
     IsEqual :: Value -> Value -> DescriptorRule Truthy
-    CallDescriptor :: Name -> [Value] -> DescriptorRule t
-    CanAccess :: Name -> [Value] -> [StateBody Value] -> DescriptorRule Truthy
+    CallDescriptor :: SDescriptorType t -> Name -> [Value] -> DescriptorRule t
+    CanAccess :: SDescriptorType t -> Name -> [Value] -> [StateBody Value] -> DescriptorRule t
     Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County
     Sum :: [DescriptorRule County] -> DescriptorRule County
     AtLeast :: DescriptorRule County -> Nteger -> DescriptorRule Truthy
@@ -201,10 +209,6 @@ data UntypedLiteral =
 
 $(makePrisms ''Value)
 
-data SDescriptorType :: DescriptorType -> * where
-    STruthy :: SDescriptorType Truthy
-    SCounty :: SDescriptorType County
-
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 
 type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
@@ -260,15 +264,19 @@ typecheck boundVars (UntypedDescriptorRule pos (UTCallDescriptor name args)) s =
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to call to `" <> T.unpack name <> "` but got " <> show y <> "."
     checkBoundValues pos boundVars args
     case t of
-        Truthy -> return $ castIfNeccessary s $ CallDescriptor @Truthy name args
+        Truthy -> return $ castIfNeccessary s $ CallDescriptor STruthy name args
         County -> case s of
             STruthy -> strErrorWithPos pos $ "Was expecting a Truthy value, but call to descriptor `" <> T.unpack name <> "` has type County."
-            SCounty -> return $ CallDescriptor name args
+            SCounty -> return $ CallDescriptor SCounty name args
 typecheck boundVars (UntypedDescriptorRule pos (UTCanAccess name args states)) s = do
     (argScopes, t) <- fromDecl name Reachability
     checkBoundValues pos boundVars args
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to check with [" <> T.unpack name <> "] but got " <> show y <> "."
-    return $ castIfNeccessary s $ CanAccess name args states
+    case t of
+        Truthy -> return $ castIfNeccessary s $ CanAccess STruthy name args states
+        County -> case s of
+            STruthy -> strErrorWithPos pos $ "Was expecting a Truthy value, but access to descriptor `" <> T.unpack name <> "` has type County."
+            SCounty -> return $ CanAccess SCounty name args states
 typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
 typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) SCounty = do
     x' <- typecheck boundVars x SCounty

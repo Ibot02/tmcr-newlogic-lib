@@ -5,10 +5,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DefaultSignatures #-}
-{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE DerivingVia #-}
-module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, fromNumber) where
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE UndecidableInstances #-}
+module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), StatefulLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF) where
 
 
 import TMCR.Logic.Descriptor
@@ -112,8 +113,6 @@ instance (Canonical t) => Canonical (Count t) where
 liftCount :: t -> Count t
 liftCount t = CountyValue [] t
 
-fromNumber :: (Lattice t) => Int -> Count t
-fromNumber n = CountyValue (replicate n top) bottom
 
 instance (Lattice t) => Lattice (Count t) where
     bottom = CountyValue [] bottom
@@ -131,10 +130,12 @@ andThen :: t -> (Count t) -> (Count t)
 andThen a (CountyValue b c) = CountyValue (a:b) c
 
 class (Lattice a) => CountyLattice a where
+    fromNumber :: Int -> a
     addCounty :: a -> a -> a
     multiplyCounty :: a -> a -> a
 
 instance (Lattice t) => CountyLattice (Count t) where
+    fromNumber n = CountyValue (replicate n top) bottom
     --addCounty :: CountyValue -> CountyValue -> CountyValue
     addCounty (CountyValue [] x) (CountyValue [] y) = CountyValue [] $ x `join` y
     addCounty x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `join` b) `andThen` addCounty x' (CountyValue bs y)
@@ -189,6 +190,7 @@ instance (Lattice t) => Lattice (LogicValue t County) where
     LogicCountyValue x `join` LogicCountyValue y = LogicCountyValue $ x `join` y
 
 instance (Lattice t) => CountyLattice (LogicValue t County) where
+    fromNumber n = LogicCountyValue $ fromNumber n
     LogicCountyValue x `addCounty` LogicCountyValue y = LogicCountyValue $ x `addCounty` y
     LogicCountyValue x `multiplyCounty` LogicCountyValue y = LogicCountyValue $ x `multiplyCounty` y
 
@@ -222,3 +224,23 @@ instance (Lattice a) => CompLattice (ComposeByMeet a) where
 
 deriving via (ComposeByMeet Bool) instance (CompLattice Bool)
 deriving via (ComposeByMeet (DNF a)) instance (Ord a) => (CompLattice (DNF a))
+
+class (CompLattice a) => StatefulLattice s a | a -> s where
+    preState :: s -> a
+    postState :: s -> a
+    atState :: s -> a -> a
+
+instance (StatefulLattice s a) => StatefulLattice s (Count a) where
+    preState s = CountyValue [] $ preState s
+    postState s = CountyValue [] $ postState s
+    atState s (CountyValue xs x) = CountyValue (fmap (atState s) xs) (atState s x)
+
+instance (StatefulLattice s t) => StatefulLattice s (LogicValue t Truthy) where
+    preState s = LogicTruthyValue $ preState s
+    postState s = LogicTruthyValue $ postState s
+    atState s (LogicTruthyValue t) = LogicTruthyValue $ atState s t
+
+instance (StatefulLattice s t) => StatefulLattice s (LogicValue t County) where
+    preState s = LogicCountyValue $ preState s
+    postState s = LogicCountyValue $ postState s
+    atState s (LogicCountyValue t) = LogicCountyValue $ atState s t
