@@ -32,9 +32,9 @@ testValueScopingArea = NamedScoping "area" $ PlainName "Spawn"
 
 testDescriptors :: Map DescriptorName DescriptorDeclaration
 testDescriptors = M.fromList
-    [ ("set", DescriptorDeclaration (Just DescriptorExportTarget) Nothing [D.Scoped] Truthy Nothing)
-    , ("flag", DescriptorDeclaration (Just DescriptorExportEdge) Nothing [D.Scoped] Truthy Nothing)
-    , ("spawn", DescriptorDeclaration (Just DescriptorExportEdgeFromBeyondTheVoid) Nothing [] Truthy Nothing)
+    [ ("set", DescriptorDeclaration (Just DescriptorExportTarget) Nothing [D.Scoped] Truthy)
+    , ("flag", DescriptorDeclaration (Just DescriptorExportEdge) Nothing [D.Scoped] Truthy)
+    , ("spawn", DescriptorDeclaration (Just DescriptorExportEdgeFromBeyondTheVoid) Nothing [] Truthy)
     ]
 
 testMergedLogic :: (MonadMerge m) => m (Forest' L.Value)

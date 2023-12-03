@@ -8,6 +8,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE BangPatterns #-}
 module TMCR.Logic.Descriptor where
 
 import TMCR.Logic.Common
@@ -51,12 +52,14 @@ import Data.GADT.Compare
 import Data.Aeson (camelTo2, defaultOptions, Options(..))
 import Data.Aeson.TH
 
+import qualified Control.Monad.State as S
+
 data DescriptorDeclaration = DescriptorDeclaration {
       _descriptorDeclarationExport :: Maybe DescriptorExport
     , _descriptorDeclarationStateful :: Maybe Bool
     , _descriptorDeclarationArguments :: [Scoping]
     , _descriptorDeclarationType :: DescriptorType
-    , _descriptorDeclarationConsumes :: Maybe DescriptorConsumeSpec
+    -- , _descriptorDeclarationConsumes :: Maybe DescriptorConsumeSpec
     } deriving (Eq, Ord, Show)
 
 data DescriptorExport = DescriptorExportNone | DescriptorExportEdge | DescriptorExportSelfEdge | DescriptorExportEdgeFromBeyondTheVoid | DescriptorExportTarget deriving (Eq, Ord, Show, Enum, Bounded)
@@ -67,15 +70,15 @@ data Scoping = Unscoped | Scoped deriving (Eq, Ord, Show, Enum, Bounded)
 
 data DescriptorType = Truthy | County deriving (Eq, Ord, Show, Enum, Bounded)
 
-data DescriptorConsumeSpec = DescriptorConsumeSpec {
-      _descriptorConsumerSpecKey :: Text --todo: add relation for key item type
-    , _descriptorConsumerSpecLock :: Text
-    } deriving (Eq, Ord, Show)
+-- data DescriptorConsumeSpec = DescriptorConsumeSpec {
+--       _descriptorConsumerSpecKey :: Text --todo: add relation for key item type
+--     , _descriptorConsumerSpecLock :: Text
+--     } deriving (Eq, Ord, Show)
 
 #if MIN_VERSION_aeson(1,5,0)
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
+-- $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower, rejectUnknownFields = True} ''DescriptorConsumeSpec)
 #else
-$(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower} ''DescriptorConsumeSpec)
+-- $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorConsumerSpec") . fmap toLower} ''DescriptorConsumeSpec)
 #endif
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''DescriptorType)
 $(deriveJSON defaultOptions{ constructorTagModifier = camelTo2 '-' } ''Scoping)
@@ -86,7 +89,7 @@ $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDec
 $(deriveJSON defaultOptions{ fieldLabelModifier = drop (T.length "_descriptorDeclaration") . fmap toLower, omitNothingFields = True} ''DescriptorDeclaration)
 #endif
 $(makeLenses ''DescriptorDeclaration)
-$(makeLenses ''DescriptorConsumeSpec)
+-- $(makeLenses ''DescriptorConsumeSpec)
 
 data DescriptorIdent t where
     TruthyDescriptorIdent :: DescriptorName -> DescriptorIdent Truthy
@@ -124,12 +127,13 @@ data Descriptor (t :: DescriptorType) where
 deriving instance Show (Descriptor t)
 deriving instance Eq (Descriptor t)
 deriving instance Ord (Descriptor t)
+type ConsumeUUID = Int
 
 data DescriptorRule (t :: DescriptorType) where
     Constant :: Literal t -> DescriptorRule t
     IsEqual :: Value -> Value -> DescriptorRule Truthy
     CallDescriptor :: Name -> [Value] -> DescriptorRule t
-    CanAccess :: Name -> [Value] -> [StateBody] -> DescriptorRule Truthy
+    CanAccess :: Name -> [Value] -> [StateBody Value] -> DescriptorRule Truthy
     Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County
     Sum :: [DescriptorRule County] -> DescriptorRule County
     AtLeast :: DescriptorRule County -> Nteger -> DescriptorRule Truthy
@@ -138,8 +142,9 @@ data DescriptorRule (t :: DescriptorType) where
     Min :: [DescriptorRule t] -> DescriptorRule t
     Max :: [DescriptorRule t] -> DescriptorRule t
     Cast :: DescriptorRule Truthy -> DescriptorRule County -- truth -> infinity, false -> 0
-    PriorState :: [StateBody] -> DescriptorRule Truthy
-    PostState :: [StateBody] -> DescriptorRule Truthy
+    PriorState :: [StateBody Value] -> DescriptorRule Truthy
+    PostState :: [StateBody Value] -> DescriptorRule Truthy
+    Consume :: ConsumeUUID -> Name -> [Value] -> DescriptorRule t -> DescriptorRule t
 
 deriving instance Show (DescriptorRule t)
 deriving instance Eq (DescriptorRule t)
@@ -161,8 +166,8 @@ data Value = Variable VarName
            | ConstantValue PossiblyScopedName
                 deriving (Eq, Ord, Show)
 
-data StateBody = IsSet Value
-               | IsNotSet Value
+data StateBody v = IsSet v
+                 | IsNotSet v
                 deriving (Eq, Ord, Show)
 
 data Relation = Forward RelName
@@ -177,7 +182,7 @@ data UntypedDescriptorRule' =
       UTConstant UntypedLiteral
     | UTIsEqual Value Value
     | UTCallDescriptor Name [Value]
-    | UTCanAccess Name [Value] [StateBody]
+    | UTCanAccess Name [Value] [StateBody Value]
     | UTProduct UntypedDescriptorRule UntypedDescriptorRule
     | UTSum [UntypedDescriptorRule]
     | UTAtLeast UntypedDescriptorRule Nteger
@@ -185,8 +190,9 @@ data UntypedDescriptorRule' =
     | UTCount VarName Relation Value UntypedDescriptorRule
     | UTMin [UntypedDescriptorRule]
     | UTMax [UntypedDescriptorRule]
-    | UTPriorState [StateBody]
-    | UTPostState [StateBody]
+    | UTPriorState [StateBody Value]
+    | UTPostState [StateBody Value]
+    | UTConsume ConsumeUUID Name [Value] UntypedDescriptorRule
 
 data UntypedLiteral =
       UTOolean Oolean
@@ -201,11 +207,10 @@ data SDescriptorType :: DescriptorType -> * where
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 
 type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
-
 getDescriptorDeclarations :: Map DescriptorName DescriptorDeclaration -> DescriptorDeclarations
 getDescriptorDeclarations = Map.fromList . fmap (\(name, decl) -> ((name, case decl ^. descriptorDeclarationExport of {Just DescriptorExportTarget -> Reachability; _ -> DefaultRole}), (decl ^. descriptorDeclarationArguments, decl ^. descriptorDeclarationType))) . Map.toList
 
-type Parser = ParserC DescriptorDeclarations
+type Parser = ParserCT DescriptorDeclarations (S.State Int)
 
 parseDescriptorDefinitions :: Parser (DMap DescriptorIdent Descriptors)
 parseDescriptorDefinitions = DM.fromListWithKey mergeDescriptors . fmap pluralize <$> many parseDescriptorDefinition where
@@ -286,13 +291,22 @@ typecheck (UntypedDescriptorRule pos (UTMax rs)) s = do
     return $ Max rs'
 typecheck (UntypedDescriptorRule pos (UTPriorState st)) s = return $ castIfNeccessary s $ PriorState st
 typecheck (UntypedDescriptorRule pos (UTPostState st)) s = return $ castIfNeccessary s $ PostState st
+typecheck (UntypedDescriptorRule pos (UTConsume uuid name args rule')) s = do
+    r' <- typecheck rule' s
+    (argScopes, t) <- fromDecl name DefaultRole
+    assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to call to `" <> T.unpack name <> "` but got " <> show y <> "."
+    case t of
+        Truthy -> strErrorWithPos pos $ "Was expecting a county value, but call to descriptor `" <> T.unpack name <> "`has type Truthy. (In consumer usage, no implicit cast.)"
+        County ->
+            return $ Consume uuid name args r'
 
 castIfNeccessary :: SDescriptorType t -> DescriptorRule Truthy -> DescriptorRule t
 castIfNeccessary STruthy = id
 castIfNeccessary SCounty = Cast
 
 parseRule' :: [VarName] -> Parser UntypedDescriptorRule
-parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "." where
+parseRule' boundVars = parseRule'' boundVars <* MPL.symbol sc "." where
+    parseRule'' boundVars = makeExprParser (terms boundVars) ops
     ops = [ [binary "*" UTProduct]
           , [binary' "+" UTSum]
           , [atLeastOp]
@@ -312,7 +326,7 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
     terms boundVars = do
         p <- stateOffset <$> getParserState
         UntypedDescriptorRule p <$> terms' boundVars
-    terms' boundVars = (UTConstant <$> constant) <|> isEqual boundVars <|> call boundVars <|> canAccess boundVars <|> quantifiers boundVars <|> statey boundVars
+    terms' boundVars = try $ (UTConstant <$> constant) <|> isEqual boundVars <|> call boundVars <|> canAccess boundVars <|> quantifiers boundVars <|> statey boundVars <|> consuming boundVars
     constant = (UTNteger <$> parseNteger) <|> (UTOolean <$> parseOolean)
     isEqual boundVars = try $ do
         v <- parseValue boundVars
@@ -337,7 +351,7 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
         name <- parseVarName
         rel <- (Forward <$> MP.between (MPL.symbol sc "-") (MPL.symbol sc "->") parseRelName) <|> (Backward <$> MP.between (MPL.symbol sc "<-") (MPL.symbol sc "-") parseRelName)
         v <- parseValue (name : boundVars)
-        rule <- between (MPL.symbol sc "(") (MPL.symbol sc ")") $ parseRule' (name : boundVars)
+        rule <- between (MPL.symbol sc "(") (MPL.symbol sc ")") $ parseRule'' (name : boundVars)
         return $ f name rel v rule
     statey boundVars = do
         f <- (UTPriorState <$ MPL.symbol sc "?") <|> (UTPostState <$ MPL.symbol sc "!")
@@ -345,6 +359,16 @@ parseRule' boundVars = makeExprParser (terms boundVars) ops <* MPL.symbol sc "."
     stateyBody boundVars = MP.between (MPL.symbol sc "[") (MPL.symbol sc "]") $ flip MP.sepBy1 (MPL.symbol sc ",") $ do
         f <- option IsSet $ IsNotSet <$ (MPL.symbol sc "~" <|> MPL.symbol sc "¬")
         f <$> parseValue boundVars
+    consuming boundVars = do
+        (name, args) <- MP.between (MPL.symbol sc "@" >> MPL.symbol sc "[") (MPL.symbol sc "]") $ do
+            name <- parseName
+            args <- many $ parseValue boundVars
+            return (name, args)
+        rule <- MP.between (MPL.symbol sc "(") (MPL.symbol sc ")") $ parseRule'' boundVars
+        uuid <- nextUUID
+        return $ UTConsume uuid name args rule
+
+nextUUID = S.state (\x -> let !x' = x + 1 in (x', x'))
 
 parseOolean :: Parser Oolean
 parseOolean = label "oolean" $ (OolFalse <$ (MPL.symbol sc "false" <|> MPL.symbol sc "⊥")) <|> (OolOol <$ MPL.symbol sc "ool") <|> (OolTrue <$ (MPL.symbol sc "true" <|> MPL.symbol sc "⊤"))

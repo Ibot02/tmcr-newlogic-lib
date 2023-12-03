@@ -17,6 +17,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE LambdaCase #-}
 module TMCR.Shuffler where
 
 import TMCR.Logic.Descriptor
@@ -44,6 +45,7 @@ import TMCR.Logic.Algebra
 import TMCR.Logic.Merge
 
 import Data.Coerce (coerce)
+import Data.List (subsequences, (\\))
 
 --descriptors, with all parameters specified, with reachability (and maybe sphere) values (truthy descriptors) or reachable counts (county descriptors)
 --shuffles, hierarchical multi relations
@@ -91,10 +93,10 @@ data Eval m (v :: DescriptorType -> *) = Eval {
     , evalMin :: forall t. SDescriptorType t -> [v t] -> m (v t)
     , evalMax :: forall t. SDescriptorType t -> [v t] -> m (v t)
     , evalCast :: v Truthy -> m (v County)
-    , evalPriorState :: [StateBody] -> m (v Truthy)
-    , evalPostState :: [StateBody] -> m (v Truthy)
+    , evalPriorState :: [StateBody Thingy] -> m (v Truthy)
+    , evalPostState :: [StateBody Thingy] -> m (v Truthy)
     , evalSequence :: v Truthy -> v Truthy -> m (v Truthy)
-    , deferConsumer :: forall t. (DescriptorIdent t, [Thingy]) -> m (v t)
+    , deferConsumer :: forall t. (Int, Map VarName Thingy, DescriptorIdent t, [Thingy]) -> m (v t)
     }
 
 data Definitions = Definitions {
@@ -118,8 +120,8 @@ definedEdgesFrom name = definedEdges . to (taggedGetEdgesFrom name)
 definedLogicNodeAccess name = definedLogicNodes . ix name
 definedDescriptorType  :: DescriptorName -> Traversal' Definitions DescriptorType
 definedDescriptorType name = descriptorDeclarations . ix name . descriptorDeclarationType
-definedDescriptorConsumesSpec  :: DescriptorName -> Traversal' Definitions DescriptorConsumeSpec
-definedDescriptorConsumesSpec name = descriptorDeclarations . ix name . descriptorDeclarationConsumes . _Just
+-- definedDescriptorConsumesSpec  :: DescriptorName -> Traversal' Definitions DescriptorConsumeSpec
+-- definedDescriptorConsumesSpec name = descriptorDeclarations . ix name . descriptorDeclarationConsumes . _Just
 definedDescriptor :: DescriptorIdent t -> Traversal' Definitions [Descriptor t]
 definedDescriptor name@(TruthyDescriptorIdent _) = truthyDescriptorDefinitions . ix name
 definedDescriptor name@(CountyDescriptorIdent _) = countyDescriptorDefinitions . ix name
@@ -142,22 +144,22 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
         updateLogicNode name t
     DescriptorDependend (name, params) -> do
         descType <- asks (^?! definedDescriptorType name)
-        spec <- asks (^? definedDescriptorConsumesSpec name)
-        case (descType, spec) of
-            (Truthy, Nothing) -> do
+        -- spec <- asks (^? definedDescriptorConsumesSpec name)
+        case descType of
+            Truthy -> do
                 ds <- view $ definedDescriptor (TruthyDescriptorIdent name)
                 ts <- forM ds $ \d ->
-                    evalDescriptor eval STruthy d params
+                    evalDescriptor eval STruthy name d params
                 let t = getJoin $ foldMap Join ts
                 updateTruthyDescriptor (name, params) t
-            (County, Nothing) -> do
+            County -> do
                 ds <- view $ definedDescriptor (CountyDescriptorIdent name)
                 ts <- forM ds $ \d ->
-                    evalDescriptor eval SCounty d params
+                    evalDescriptor eval SCounty name d params
                 let t = getJoin $ foldMap Join ts
                 updateCountyDescriptor (name, params) t
-            (Truthy, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (TruthyDescriptorIdent lock, params) >>= updateTruthyDescriptor (name, params)
-            (County, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (CountyDescriptorIdent lock, params) >>= updateCountyDescriptor (name, params)
+            -- (Truthy, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (TruthyDescriptorIdent lock, params) >>= updateTruthyDescriptor (name, params)
+            -- (County, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (CountyDescriptorIdent lock, params) >>= updateCountyDescriptor (name, params)
 
 newtype UpdateT v m a = UpdateT { extractUpdate :: RWST Definitions [ShuffleDependend] (ShuffleProgress (v Truthy) (v County), [ShuffleDependency]) m a }
                       deriving newtype ( MonadReader Definitions )
@@ -260,8 +262,8 @@ askDescriptor SCounty = askCountyDescriptor . CountyDescriptorIdent
 deriving via Lift (ReaderT r) m instance (MonadEval t c m) => MonadEval t c (ReaderT r m)
 
 
-evalDescriptor :: forall m (v :: DescriptorType -> *) t. (MonadEval (v Truthy) (v County) m) => Eval (ReaderT (Map VarName Thingy) m) v -> SDescriptorType t -> Descriptor t -> [Thingy] -> m (v t)
-evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (evalConstant eval (bottomLiteral dt)) mempty) (runReaderT (go dt rule)) (tryBinds paramSpec params) where
+evalDescriptor :: forall m (v :: DescriptorType -> *) t. (MonadEval (v Truthy) (v County) m) => Eval (ReaderT (Map VarName Thingy) m) v -> SDescriptorType t -> DescriptorName -> Descriptor t -> [Thingy] -> m (v t)
+evalDescriptor eval dt name (Descriptor paramSpec rule) params = maybe (runReaderT (evalConstant eval (bottomLiteral dt)) mempty) (runReaderT (go dt rule)) (tryBinds paramSpec params) where
     bottomLiteral :: forall t. SDescriptorType t -> Literal t
     bottomLiteral STruthy = TruthyLiteral OolFalse
     bottomLiteral SCounty = CountyLiteral (Finite 0)
@@ -288,8 +290,11 @@ evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (e
         askDescriptor t name params
     go t (CanAccess name values sb) = do
         params <- traverse valToThingy values
+        sb' <- traverse (\case
+                IsSet v -> IsSet <$> valToThingy v
+                IsNotSet v -> IsNotSet <$> valToThingy v) sb
         v <- askAccess name params
-        s <- evalPriorState eval sb
+        s <- evalPriorState eval sb'
         evalSequence eval v s
     go _ (Constant x) = evalConstant eval x
     go _ (Product a b) = do
@@ -309,25 +314,60 @@ evalDescriptor eval dt (Descriptor paramSpec rule) params = maybe (runReaderT (e
     go t (Min rules) = traverse (go t) rules >>= evalMin eval t
     go t (Max rules) = traverse (go t) rules >>= evalMax eval t
     go _ (Cast rule) = goT rule >>= evalCast eval
-    go _ (PriorState sb) = evalPriorState eval sb
-    go _ (PostState sb) = evalPostState eval sb
+    go _ (PriorState sb) = do
+        sb' <- traverse (\case
+                IsSet v -> IsSet <$> valToThingy v
+                IsNotSet v -> IsNotSet <$> valToThingy v) sb
+        evalPriorState eval sb'
+    go _ (PostState sb) = do
+        sb' <- traverse (\case
+                IsSet v -> IsSet <$> valToThingy v
+                IsNotSet v -> IsNotSet <$> valToThingy v) sb
+        evalPostState eval sb'
+    go _ (Consume uuid name' args' rule') = do
+        return undefined
     valToThingy (Variable var) = asks (^?! ix var)
     valToThingy (ConstantValue t) = return t
 
 data LockIdent = LockIdent {
-      lockIdentDesc :: DescriptorName
-    , lockIdentName :: [Thingy]
+      lockIdentOpenUUID :: Int
+    , lockIdentOpenContext :: Map VarName Thingy
+    , lockIdentKeyDesc :: DescriptorName
+    , lockIdentKeyNames :: [Thingy]
     } deriving (Eq, Ord, Show)
 
 data Consuming a t = Consuming { getConsuming :: (Map (Set a) t) } deriving (Eq, Ord, Show)
 
-newtype Stateful t = Stateful t --todo
-    deriving Lattice
+data StateBodies a = StateBodies
+        { isSets :: Set a
+        , isNotSets :: Set a
+        } deriving (Eq, Ord, Show)
+
+instance (Ord a) => Semigroup (StateBodies a) where
+    StateBodies x y <> StateBodies x' y' = StateBodies (x <> x') (y <> y')
+
+instance (Ord a) => Monoid (StateBodies a) where
+    mempty = StateBodies mempty mempty
+
+sbFromList :: (Ord a) => [StateBody a] -> StateBodies a
+sbFromList xs = StateBodies (S.fromList [v | IsSet v <- xs]) (S.fromList [v | IsNotSet v <- xs])
+
+newtype Stateful t = Stateful (Map (StateBodies Thingy, StateBodies Thingy) t) --todo
     deriving Eq
     deriving Ord
     deriving Show
 
-liftStateful = Stateful
+instance (Lattice t) => Lattice (Stateful t) where
+    meet (Stateful a) (Stateful b) = Stateful $ M.fromList $
+        [((pre <> pre', combinePost $ post <> post'),val `meet` val') | ((pre, post), val) <- M.toList a, ((pre', post'), val') <- M.toList b, doNotConflict (pre <> pre')] where
+        combinePost (StateBodies x y) = StateBodies x (y S.\\ x)
+        doNotConflict (StateBodies xs ys) = null $ S.intersection xs ys
+    join (Stateful a) (Stateful b) = Stateful $ M.unionWith join a b
+    top = liftStateful top
+    bottom = liftStateful bottom
+
+liftStateful :: t -> Stateful t
+liftStateful = Stateful . M.singleton (mempty,mempty)
 
 liftConsuming = Consuming . uncurry M.singleton . ((,) S.empty)
 
@@ -337,27 +377,52 @@ instance (Lattice t, Ord a) => Lattice (Consuming a t) where
     top = liftConsuming top
     bottom = liftConsuming bottom
 
-instance (Canonical t, Ord a) => Canonical (Consuming a t) where
-    canonicalize = Consuming . M.foldlWithKey' f mempty . getConsuming where
-        f acc key (canonicalize -> !value) = if | supplanted acc key value -> acc
+canonicalizeConsuming :: (Ord a, EqLattice t) => Consuming a t -> Consuming a t
+canonicalizeConsuming = Consuming . M.foldlWithKey' f mempty . getConsuming where
+        f acc key (!value) = if | supplanted acc key value -> acc
                                                 | otherwise -> M.insert key value $ M.mapMaybeWithKey (g key value) acc
         supplanted acc key value = any (\(key', value') -> S.isSubsetOf key' key && value `implies` value') $ M.toList acc
         g key1 v1 key2 v2 | key1 `S.isSubsetOf` key2 = let !vnew = v1 `join` v2 in if | vnew `equiv` v1 -> Nothing
                                                                                       | otherwise -> Just vnew
                           | otherwise = Just v2
-    (canonicalize -> Consuming x1) `equiv` (canonicalize -> Consuming x2) = case M.mergeA (M.traverseMissing $ \_ _ -> Nothing) (M.traverseMissing $ \_ _ -> Nothing) (M.zipWithAMatched $ \_ a b -> if equiv a b then Just () else Nothing) x1 x2 of
+
+instance (EqLattice t, Ord a) => EqLattice (Consuming a t) where
+    (canonicalizeConsuming -> Consuming x1) `equiv` (canonicalizeConsuming -> Consuming x2) = case M.mergeA (M.traverseMissing $ \_ _ -> Nothing) (M.traverseMissing $ \_ _ -> Nothing) (M.zipWithAMatched $ \_ a b -> if equiv a b then Just () else Nothing) x1 x2 of
         Just _ -> True
         Nothing -> False
+
+instance (Canonical t, Ord a) => Canonical (Consuming a t) where
+    canonicalize (Consuming a) = canonicalizeConsuming $ Consuming $ fmap canonicalize a
 
 {-
 
 -}
 
-instance (Canonical t) => Canonical (Stateful t) where
-    canonicalize = id --todo
-    (Stateful a) `equiv` (Stateful b) = a `equiv` b
+instance (EqLattice t) => EqLattice (Stateful t) where
+    (Stateful a) `equiv` (Stateful b) = case M.mergeA (M.traverseMissing $ \_ _ -> Nothing) (M.traverseMissing $ \_ _ -> Nothing) (M.zipWithAMatched $ \_ a b -> if equiv a b then Just () else Nothing) a b of
+        Just _ -> True
+        Nothing -> False
 
-defaultEval :: forall m t t'. (Lattice t', Ord t', t ~ (Consuming LockIdent (Stateful (OolAble t'))), MonadEval (LogicValue t Truthy) (LogicValue t County) m) => Eval m (LogicValue t)
+
+instance (CompLattice t) => CompLattice (Stateful t) where
+    composeL (Stateful a) (Stateful b) = Stateful $ M.fromListWith join $ do
+        ((StateBodies preT preF, StateBodies postT postF),v) <- M.toList a
+        ((StateBodies preT' preF', StateBodies postT' postF'), v') <- M.toList b
+        let posts = StateBodies postsT postsF
+            postsT = postT' <> (postT S.\\ postF')
+            postsF = (postF' <> (postF S.\\ postT')) S.\\ presF
+            pres = StateBodies presT presF
+            presT = preT <> (preT' S.\\ postT)
+            presF = preF <> (preF' S.\\ postF)
+        guard $ null $ S.intersection preT' postF
+        guard $ null $ S.intersection preF' postT
+        guard $ null $ S.intersection presT presF
+        pure ((pres, posts), composeL v v')
+
+instance (CompLattice t, Ord a) => CompLattice (Consuming a t) where
+    composeL (Consuming x) (Consuming y) = Consuming $ M.fromList $ [(S.union k1 k2, v1 `composeL` v2) | (k1, v1) <- M.toList x, (k2, v2) <- M.toList y]
+
+defaultEval :: forall m t t'. (CompLattice t', Ord t', t ~ (Consuming LockIdent (Stateful (OolAble t'))), MonadEval (LogicValue t Truthy) (LogicValue t County) m) => Eval m (LogicValue t)
 defaultEval = Eval {..} where
     evalConstant :: forall t'. Literal t' -> m (LogicValue t t')
     evalConstant (TruthyLiteral OolTrue) = return $ top
@@ -392,13 +457,17 @@ defaultEval = Eval {..} where
     evalMax SCounty = return . foldr join bottom
     evalCast :: LogicValue t Truthy -> m (LogicValue t County)
     evalCast = return . (`scale` top)
-    evalPriorState :: [StateBody] -> m (LogicValue t Truthy)
-    evalPriorState _ = return top--todo
-    evalPostState :: [StateBody] -> m (LogicValue t Truthy)
-    evalPostState [] = return top
-    evalPostState _ = return bottom --todo
+    evalPriorState :: [StateBody Thingy] -> m (LogicValue t Truthy)
+    evalPriorState sb = return $ LogicTruthyValue $ liftConsuming $ Stateful $ M.fromList $
+        let pre@(StateBodies preT preF) = sbFromList sb in
+        [((pre, StateBodies mempty (S.fromList postF)), top) | postF <- subsequences (S.toList preT)]
+            --M.singleton (sbFromList sb,mempty) top
+    evalPostState :: [StateBody Thingy] -> m (LogicValue t Truthy)
+    evalPostState sb = return $ LogicTruthyValue $ liftConsuming $ Stateful $ M.fromList $ 
+        let (StateBodies postT postF) = sbFromList sb in
+        [((mempty, StateBodies (S.fromList postT') postF), top) | postT' <- subsequences (S.toList postT)]
     evalSequence :: LogicValue t Truthy -> LogicValue t Truthy -> m (LogicValue t Truthy)
-    evalSequence = ((.).(.)) return meet
-    deferConsumer :: forall t'. (DescriptorIdent t', [Thingy]) -> m (LogicValue t t')
-    deferConsumer (TruthyDescriptorIdent name, args) = return $ LogicTruthyValue $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent name args), top)
-    deferConsumer (CountyDescriptorIdent name, args) = return $ LogicCountyValue $ liftCount $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent name args), top)
+    evalSequence a b = return (a `composeL` b)
+    deferConsumer :: forall t'. (Int, Map VarName Thingy, DescriptorIdent t', [Thingy]) -> m (LogicValue t t')
+    deferConsumer (uuid, bindings, TruthyDescriptorIdent name, args) = return $ LogicTruthyValue $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent uuid bindings name args), top)
+    deferConsumer (uuid, bindings, CountyDescriptorIdent name, args) = return $ LogicCountyValue $ liftCount $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent uuid bindings name args), top)

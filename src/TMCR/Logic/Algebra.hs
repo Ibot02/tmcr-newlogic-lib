@@ -5,7 +5,10 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DefaultSignatures #-}
-module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), Canonical(..), CountyLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, fromNumber) where
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE DerivingVia #-}
+module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, fromNumber) where
 
 
 import TMCR.Logic.Descriptor
@@ -70,20 +73,25 @@ instance (Lattice t) => Lattice (OolAble t) where
     meet (OolAble x1 x2) (OolAble y1 y2) = OolAble (meet x1 y1) (meet x1 y2 `join` meet x2 y1 `join` meet x2 y2)
     join (OolAble x1 x2) (OolAble y1 y2) = OolAble (join x1 y1) $ x1 `join` x2 `join` y1 `join` y2
 
-class Lattice a => Canonical a where
-    canonicalize :: a -> a
+class Lattice a => EqLattice a where
     equiv :: a -> a -> Bool
-    default equiv :: (Eq a)  => a -> a -> Bool
+    default equiv :: (Canonical a, Eq a)  => a -> a -> Bool
     a `equiv` b = canonicalize a == canonicalize b
     implies :: a -> a -> Bool
     a `implies` b = (a `join` b) `equiv` b
 
+class EqLattice a => Canonical a where
+    canonicalize :: a -> a
+
+instance EqLattice Bool
 instance Canonical Bool where
     canonicalize = id
 
+instance (EqLattice t) => EqLattice (OolAble t) where
+    (OolAble x1 y1) `equiv` (OolAble x2 y2) = x1 `equiv` x2 && y1 `equiv` y2
+
 instance Canonical t => Canonical (OolAble t) where
     canonicalize = id
-    (OolAble x1 y1) `equiv` (OolAble x2 y2) = x1 `equiv` x2 && y1 `equiv` y2
 
 --monotonically decreasing
 data Count t = CountyValue [t] t
@@ -92,12 +100,14 @@ data Count t = CountyValue [t] t
 finitePart (CountyValue ts _) = ts
 infiniteExtension (CountyValue _ t) = t
 
-instance (Canonical t) => Canonical (Count t) where
-    canonicalize (CountyValue ts t) = CountyValue (takeWhile (\t' -> not $ t `implies` t') ts) t
+instance (EqLattice t) => EqLattice (Count t) where
     equiv (CountyValue [] t) (CountyValue [] t') = equiv t t'
     equiv (CountyValue as t) (CountyValue [] t') = all (`equiv` t') as && equiv t t'
     equiv (CountyValue [] t) (CountyValue bs t') = all (equiv t) bs && equiv t t'
     equiv (CountyValue (a:as) t) (CountyValue (b:bs) t') = equiv a b && equiv (CountyValue as t) (CountyValue bs t')
+
+instance (Canonical t) => Canonical (Count t) where
+    canonicalize (CountyValue ts t) = CountyValue (takeWhile (\t' -> not $ t `implies` t') ts) t
 
 liftCount :: t -> Count t
 liftCount t = CountyValue [] t
@@ -157,11 +167,13 @@ deriving instance (Ord t) => Ord (LogicValue t County)
 deriving instance (Show t) => Show (LogicValue t Truthy)
 deriving instance (Show t) => Show (LogicValue t County)
 
+instance (EqLattice t) => EqLattice (LogicValue t Truthy) where
+    equiv (LogicTruthyValue t) (LogicTruthyValue t') = equiv t t'
 instance (Canonical t) => Canonical (LogicValue t Truthy) where
     canonicalize (LogicTruthyValue t) = LogicTruthyValue $ canonicalize t
-    equiv (LogicTruthyValue t) (LogicTruthyValue t') = equiv t t'
-instance (Canonical t) => Canonical (LogicValue t County) where
+instance (EqLattice t) => EqLattice (LogicValue t County) where
     equiv (LogicCountyValue t) (LogicCountyValue t') = equiv t t'
+instance (Canonical t) => Canonical (LogicValue t County) where
     canonicalize (LogicCountyValue t) = LogicCountyValue $ canonicalize t
 
 instance (Lattice t) => Lattice (LogicValue t Truthy) where
@@ -186,3 +198,27 @@ instance (Lattice t) => LogicValues (LogicValue t Truthy) (LogicValue t County) 
 
 latticeFromMaybe Nothing = bottom
 latticeFromMaybe (Just x) = x
+
+class (Lattice t) => CompLattice t where
+    composeL :: t -> t -> t
+
+instance (CompLattice t) => CompLattice (LogicValue t Truthy) where
+    composeL (LogicTruthyValue a) (LogicTruthyValue b) = LogicTruthyValue $ a `composeL` b
+
+instance (CompLattice t) => CompLattice (Count t) where
+    composeL (CountyValue [] xs) (CountyValue [] ys) = CountyValue [] (xs `composeL` ys)
+    composeL (CountyValue xss xs) y@(CountyValue yss ys) = foldr addCounty (foldr addCounty (CountyValue [] (xs `composeL` ys)) $ fmap (\y -> CountyValue [] (xs `composeL` y)) yss) $ fmap (\x -> CountyValue (fmap (composeL x) yss) (composeL x ys)) xss
+
+instance (CompLattice t) => CompLattice (LogicValue t County) where
+    composeL (LogicCountyValue a) (LogicCountyValue b) = LogicCountyValue $ a `composeL` b
+
+instance (CompLattice t) => CompLattice (OolAble t) where
+    composeL (OolAble x1 x2) (OolAble y1 y2) = OolAble (composeL x1 y1) (composeL x1 y2 `join` composeL x2 y1 `join` composeL x2 y2)
+
+newtype ComposeByMeet a = ComposeByMeet a deriving newtype Lattice
+
+instance (Lattice a) => CompLattice (ComposeByMeet a) where
+    composeL = meet
+
+deriving via (ComposeByMeet Bool) instance (CompLattice Bool)
+deriving via (ComposeByMeet (DNF a)) instance (Ord a) => (CompLattice (DNF a))

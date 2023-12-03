@@ -39,10 +39,11 @@ import Polysemy
 import Polysemy.Error
 import qualified Data.Text as T
 import TMCR.Logic.Common
-import Text.Megaparsec (ParseErrorBundle, parseErrorTextPretty, errorBundlePretty)
+import Text.Megaparsec (ParseErrorBundle, parseErrorTextPretty, errorBundlePretty, runParserT)
 import Data.Void (Void)
 import Data.Text (Text)
 import Polysemy.Reader
+import Polysemy.State
 import Data.Map (Map)
 import qualified Data.Text.Encoding as TE
 import TMCR.Logic.Logic
@@ -55,6 +56,9 @@ import Data.Yaml (decodeEither, ParseException, decodeEither')
 #else
 import Data.YAML.Aeson
 #endif
+
+import qualified Control.Monad.Reader as R
+import qualified Control.Monad.State as S
 
 import Data.Functor.Foldable.TH
 import Data.Functor.Classes
@@ -281,7 +285,7 @@ readGameDefStrErr sources = joinErrorTextPrefix @ParseException "ParseException:
     joinErrorTextPrefix pre k = joinError (\x -> pre <> T.pack (show x)) k
 
 readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
-readGameDef sources = do
+readGameDef sources = evalState @Int 0 $ do
     xs <- fmap concat $ forM sources $ \path -> inSubdirs path $ \path -> do
         m <- readModule
         return (path, m)
@@ -354,7 +358,7 @@ instance (Member (Error MergeError) r, Member (Reader ModuleDependencyInfo) r) =
     dependencies = ask
     warningIgnoredLogicSubtree _ = return ()
 
-readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error (ParseErrorBundle Text Void)] r) => ModuleContent -> Sem r ModuleFullContent
+readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error (ParseErrorBundle Text Void), State Int] r) => ModuleContent -> Sem r ModuleFullContent
 readModuleFullContent content =
     runReader
         @DescriptorDeclarations
@@ -363,8 +367,12 @@ readModuleFullContent content =
         (content ^. moduleContentLogicSugar . sugars) $
     do
         descriptorDefs <- fmap (DM.unionsWithKey (\_ (Descriptors xs) (Descriptors ys) -> Descriptors (xs <> ys)) . concat) $ forM (content ^. moduleContentDescriptorDefinitions) $ \x -> do
-            withPath (T.unpack x) $ \p c ->
-                runParserC parseDescriptorDefinitions p (TE.decodeUtf8 $ BL.toStrict c)
+            withPath (T.unpack x) $ \p c -> do
+                x <- ask @DescriptorDeclarations
+                y <- get
+                let (a,s') = S.runState (R.runReaderT (runParserT parseDescriptorDefinitions p (TE.decodeUtf8 $ BL.toStrict c)) x) y
+                put s'
+                either throw return a
         scopes <- ask @Scopes
         logic <- fmap concat $ forM (content ^. moduleContentLogic) $ \x -> do
             withPath (T.unpack x) $ \p c ->

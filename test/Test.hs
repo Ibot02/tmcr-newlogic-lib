@@ -28,7 +28,7 @@ import Data.Text (Text(), unpack)
 import Data.Either (isRight)
 import Data.Maybe (isJust)
 
-testModule1 = Module "test" (Version [1,0]) (Version [0,1]) [] [] $ ModuleContent (M.singleton "test" (DescriptorDeclaration Nothing (Just True) [Scoped] Truthy Nothing)) M.empty [] [] [] [] []
+testModule1 = Module "test" (Version [1,0]) (Version [0,1]) [] [] $ ModuleContent (M.singleton "test" (DescriptorDeclaration Nothing (Just True) [Scoped] Truthy)) M.empty [] [] [] [] []
 testModule1Enc :: BS.ByteString
 testModule1Enc = "dependencies: []\nname: test\nprovides:\n  data: []\n  descriptordefinitions: []\n  descriptors:\n    test:\n      arguments:\n      - scoped\n      stateful: true\n      type: truthy\n  logic: []\n  patches: []\n  shuffles: []\nsoftdependency: []\nsyntaxversion: '0.1'\nversion: '1.0'\n"
 testModuleInvalEnc :: BS.ByteString
@@ -63,19 +63,19 @@ main = hspec $ do
     describe "Module Parsing from Directories" $ do
         it "splits paths reasonably" $ do
             TIO.splitPath "nonexistent" `shouldBe` ["nonexistent"]
-        -- it "reads a GameDef from a directory" $ do
-        --     dir <- TIO.readDirectoryFull "testModules"
-        --     print dir
-        --     let xs = PS.run $ PS.runError @TIO.AssertionFailed $ PS.runError @TIO.DirectoryErrorWithContext $ TIO.runInMemoryDir dir $ TIO.inSubdirs "nonexistent" $ \path -> TIO.withSingleFile "module.yaml" $ \path' content -> return (path <> "/" <> path')
-        --     xs `shouldBe` Right (Right [])
-        --     let x = PS.run $ PS.runReader @Scopes (Scopes ["area", "room"]) $ PS.runError @Text $ PS.runError @TIO.DirectoryErrorWithContext $ TIO.runInMemoryDir dir $ TIO.readGameDefStrErr ["testModule"]
-        --     case x of
-        --         x@(Left text) -> fmap (const ()) x `shouldBe` Right ()
-        --         Right x@(Left err) -> fmap (const ()) x `shouldBe` Right ()
-        --         Right (Right x) -> do
-        --             putStrLn "Logic:"
-        --             print $ _defLogic x
-        --             _defLogic x `shouldNotSatisfy` null . snd
+        it "reads a GameDef from a directory" $ do
+            dir <- TIO.readDirectoryFull "testModules"
+            print dir
+            let xs = PS.run $ PS.runError @TIO.AssertionFailed $ PS.runError @TIO.DirectoryErrorWithContext $ TIO.runInMemoryDir dir $ TIO.inSubdirs "nonexistent" $ \path -> TIO.withSingleFile "module.yaml" $ \path' content -> return (path <> "/" <> path')
+            xs `shouldBe` Right (Right [])
+            let x = PS.run $ PS.runReader @Scopes (Scopes ["area", "room"]) $ PS.runError @Text $ PS.runError @TIO.DirectoryErrorWithContext $ TIO.runInMemoryDir dir $ TIO.readGameDefStrErr ["testModule"]
+            case x of
+                x@(Left text) -> fmap (const ()) x `shouldBe` Right ()
+                Right x@(Left err) -> fmap (const ()) x `shouldBe` Right ()
+                Right (Right x) -> do
+                    putStrLn "Logic:"
+                    print $ _defLogic x
+                    _defLogic x `shouldNotSatisfy` null . snd
     -- describe "Module Export" $ do
     --     it "" $ do
     --         dir <- TIO.readDirectoryFull "modules"
@@ -107,17 +107,13 @@ instance Arbitrary Scoping where
 instance Arbitrary DescriptorType where
     arbitrary = chooseEnum (minBound, maxBound)
 
-instance Arbitrary DescriptorConsumeSpec where
-    arbitrary = DescriptorConsumeSpec <$> arbitrary <*> arbitrary
-
 instance Arbitrary DescriptorDeclaration where
     arbitrary = do
         e <- arbitrary
         s <- arbitrary
         a <- arbitrary
         t <- arbitrary
-        c <- arbitrary
-        return $ DescriptorDeclaration e s a t c
+        return $ DescriptorDeclaration e s a t
 
 instance Arbitrary ModuleContent where
     arbitrary = do
