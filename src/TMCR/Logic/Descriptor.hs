@@ -9,6 +9,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
 module TMCR.Logic.Descriptor where
 
 import TMCR.Logic.Common
@@ -242,57 +243,68 @@ fromDecl name role = do
 
 parseRule :: [VarName] -> DescriptorType -> (forall (t :: DescriptorType). SDescriptorType t -> DescriptorRule t -> a) -> Parser a
 parseRule boundVars t cc = label "rule" $ do
-    untyped <- parseRule' boundVars
+    untyped <- parseRule'
     case t of
-            Truthy -> fmap (cc STruthy) $ typecheck untyped STruthy
-            County -> fmap (cc SCounty) $ typecheck untyped SCounty
+            Truthy -> fmap (cc STruthy) $ typecheck boundVars untyped STruthy
+            County -> fmap (cc SCounty) $ typecheck boundVars untyped SCounty
 
-typecheck :: UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule t)
-typecheck (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
-typecheck (UntypedDescriptorRule pos (UTConstant (UTNteger b))) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but Nteger (" <> show b <> ") is County."
-typecheck (UntypedDescriptorRule _ (UTConstant (UTNteger b))) SCounty = return $ Constant $ CountyLiteral b
-typecheck (UntypedDescriptorRule _ (UTIsEqual v v')) s = return $ castIfNeccessary s $ IsEqual v v'
-typecheck (UntypedDescriptorRule pos (UTCallDescriptor name args)) s = do
+typecheck :: [VarName] -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule t)
+typecheck boundVars (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
+typecheck boundVars (UntypedDescriptorRule pos (UTConstant (UTNteger b))) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but Nteger (" <> show b <> ") is County."
+typecheck boundVars (UntypedDescriptorRule _ (UTConstant (UTNteger b))) SCounty = return $ Constant $ CountyLiteral b
+typecheck boundVars (UntypedDescriptorRule pos (UTIsEqual v v')) s = do
+    checkBoundValues pos boundVars [v, v']
+    return $ castIfNeccessary s $ IsEqual v v'
+typecheck boundVars (UntypedDescriptorRule pos (UTCallDescriptor name args)) s = do
     (argScopes, t) <- fromDecl name DefaultRole
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to call to `" <> T.unpack name <> "` but got " <> show y <> "."
+    checkBoundValues pos boundVars args
     case t of
         Truthy -> return $ castIfNeccessary s $ CallDescriptor @Truthy name args
         County -> case s of
             STruthy -> strErrorWithPos pos $ "Was expecting a Truthy value, but call to descriptor `" <> T.unpack name <> "` has type County."
             SCounty -> return $ CallDescriptor name args
-typecheck (UntypedDescriptorRule pos (UTCanAccess name args states)) s = do
+typecheck boundVars (UntypedDescriptorRule pos (UTCanAccess name args states)) s = do
     (argScopes, t) <- fromDecl name Reachability
+    checkBoundValues pos boundVars args
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to check with [" <> T.unpack name <> "] but got " <> show y <> "."
     return $ castIfNeccessary s $ CanAccess name args states
-typecheck (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
-typecheck (UntypedDescriptorRule pos (UTProduct x y)) SCounty = do
-    x' <- typecheck x SCounty
-    y' <- typecheck y SCounty
+typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
+typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) SCounty = do
+    x' <- typecheck boundVars x SCounty
+    y' <- typecheck boundVars y SCounty
     return $ Product x' y'
-typecheck (UntypedDescriptorRule pos (UTSum xs)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but sum is County."
-typecheck (UntypedDescriptorRule pos (UTSum xs)) SCounty = do
-    xs' <- traverse (`typecheck` SCounty) xs
+typecheck boundVars (UntypedDescriptorRule pos (UTSum xs)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but sum is County."
+typecheck boundVars (UntypedDescriptorRule pos (UTSum xs)) SCounty = do
+    xs' <- traverse (flip (typecheck boundVars) SCounty) xs
     return $ Sum xs'
-typecheck (UntypedDescriptorRule pos (UTAtLeast r v)) s = do
-    r' <- typecheck r SCounty
+typecheck boundVars (UntypedDescriptorRule pos (UTAtLeast r v)) s = do
+    r' <- typecheck boundVars r SCounty
     return $ castIfNeccessary s $ AtLeast r' v
-typecheck (UntypedDescriptorRule pos (UTExist vname rel val r)) s = do
-    r' <- typecheck r STruthy
+typecheck boundVars (UntypedDescriptorRule pos (UTExist vname rel val r)) s = do
+    checkBoundValue pos (vname : boundVars) val
+    r' <- typecheck (vname : boundVars) r STruthy
     return $ castIfNeccessary s $ Exist vname rel val r'
-typecheck (UntypedDescriptorRule pos (UTCount vname rel val r)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but count is County."
-typecheck (UntypedDescriptorRule pos (UTCount vname rel val r)) SCounty = do
-    r' <- typecheck r STruthy
+typecheck boundVars (UntypedDescriptorRule pos (UTCount vname rel val r)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but count is County."
+typecheck boundVars (UntypedDescriptorRule pos (UTCount vname rel val r)) SCounty = do
+    checkBoundValue pos (vname : boundVars) val
+    r' <- typecheck (vname : boundVars) r STruthy
     return $ Count vname rel val r'
-typecheck (UntypedDescriptorRule pos (UTMin rs)) s = do
-    rs' <- traverse (`typecheck` s) rs
+typecheck boundVars (UntypedDescriptorRule pos (UTMin rs)) s = do
+    rs' <- traverse (flip (typecheck boundVars) s) rs
     return $ Min rs'
-typecheck (UntypedDescriptorRule pos (UTMax rs)) s = do
-    rs' <- traverse (`typecheck` s) rs
+typecheck boundVars (UntypedDescriptorRule pos (UTMax rs)) s = do
+    rs' <- traverse (flip (typecheck boundVars) s) rs
     return $ Max rs'
-typecheck (UntypedDescriptorRule pos (UTPriorState st)) s = return $ castIfNeccessary s $ PriorState st
-typecheck (UntypedDescriptorRule pos (UTPostState st)) s = return $ castIfNeccessary s $ PostState st
-typecheck (UntypedDescriptorRule pos (UTConsume uuid name args rule')) s = do
-    r' <- typecheck rule' s
+typecheck boundVars (UntypedDescriptorRule pos (UTPriorState st)) s = do
+    checkBoundValues pos boundVars $ fmap (\case IsSet v -> v; IsNotSet v -> v) st
+    return $ castIfNeccessary s $ PriorState st
+typecheck boundVars (UntypedDescriptorRule pos (UTPostState st)) s = do
+    checkBoundValues pos boundVars $ fmap (\case IsSet v -> v; IsNotSet v -> v) st
+    return $ castIfNeccessary s $ PostState st
+typecheck boundVars (UntypedDescriptorRule pos (UTConsume uuid name args rule')) s = do
+    r' <- typecheck boundVars rule' s
+    checkBoundValues pos boundVars args
     (argScopes, t) <- fromDecl name DefaultRole
     assertEq (length argScopes) (length args) pos $ \x y -> "Was expecting " <> show x <> " arguments to call to `" <> T.unpack name <> "` but got " <> show y <> "."
     case t of
@@ -300,14 +312,22 @@ typecheck (UntypedDescriptorRule pos (UTConsume uuid name args rule')) s = do
         County ->
             return $ Consume uuid name args r'
 
+checkBoundValues pos boundVars vals = traverse (checkBoundValue pos boundVars) vals
+checkBoundValue _ _ (ConstantValue _) = return ()
+checkBoundValue pos boundVars (Variable v) | v `elem` boundVars = return ()
+                                           | otherwise = strErrorWithPos pos $ "Variable v" <> quoteIfNeccessary v <> " not bound anywhere." where
+                                                            quoteIfNeccessary v = case T.uncons v of
+                                                                Nothing -> "\"\""
+                                                                Just (c, cs) -> if C.isUpper c && T.all C.isAlphaNum cs then T.unpack v else show v
 castIfNeccessary :: SDescriptorType t -> DescriptorRule Truthy -> DescriptorRule t
 castIfNeccessary STruthy = id
 castIfNeccessary SCounty = Cast
 
-parseRule' :: [VarName] -> Parser UntypedDescriptorRule
-parseRule' boundVars = parseRule'' boundVars <* MPL.symbol sc "." where
-    parseRule'' boundVars = makeExprParser (terms boundVars) ops
-    ops = [ [binary "*" UTProduct]
+parseRule' :: Parser UntypedDescriptorRule
+parseRule' = parseRule'' <* MPL.symbol sc "." where
+    parseRule'' = makeExprParser terms ops
+    ops = [ [quantifiers, consuming]
+          , [binary "*" UTProduct]
           , [binary' "+" UTSum]
           , [atLeastOp]
           , [binary' "," UTMin]
@@ -323,65 +343,67 @@ parseRule' boundVars = parseRule'' boundVars <* MPL.symbol sc "." where
         n <- parseNteger
         p <- stateOffset <$> getParserState
         return (\x -> UntypedDescriptorRule p $ UTAtLeast x n)
-    terms boundVars = do
+    terms = do
         p <- stateOffset <$> getParserState
-        UntypedDescriptorRule p <$> terms' boundVars
-    terms' boundVars = try $ (UTConstant <$> constant) <|> isEqual boundVars <|> call boundVars <|> canAccess boundVars <|> quantifiers boundVars <|> statey boundVars <|> consuming boundVars
+        UntypedDescriptorRule p <$> terms'
+    terms' = try $ (UTConstant <$> constant) <|> isEqual <|> call <|> canAccess <|> statey
     constant = (UTNteger <$> parseNteger) <|> (UTOolean <$> parseOolean)
-    isEqual boundVars = try $ do
-        v <- parseValue boundVars
+    isEqual = try $ do
+        v <- parseValue
         MPL.lexeme sc (some (MP.single '='))
-        v' <- parseValue boundVars
+        v' <- parseValue
         return $ UTIsEqual v v'
-    call boundVars = do
+    call = do
         name <- parseName
-        args <- many $ parseValue boundVars
+        args <- many $ parseValue
         return $ UTCallDescriptor name args
-    canAccess boundVars = do
+    canAccess = do
         (name, args) <- MP.between (MPL.symbol sc "[") (MPL.symbol sc "]") $ do
             name <- parseName
-            args <- many $ parseValue boundVars
+            args <- many $ parseValue
             return (name, args)
         st <- option [] $ do
             MPL.symbol sc "?"
-            stateyBody boundVars
+            stateyBody
         return $ UTCanAccess name args st
-    quantifiers boundVars = try $ do
+    quantifiers = Prefix $ do
         f <- (UTExist <$ (MPL.symbol sc "?" <|> MPL.symbol sc "∃")) <|> (UTCount <$ MPL.symbol sc "+")
         name <- parseVarName
         rel <- (Forward <$> MP.between (MPL.symbol sc "-") (MPL.symbol sc "->") parseRelName) <|> (Backward <$> MP.between (MPL.symbol sc "<-") (MPL.symbol sc "-") parseRelName)
-        v <- parseValue (name : boundVars)
-        rule <- between (MPL.symbol sc "(") (MPL.symbol sc ")") $ parseRule'' (name : boundVars)
-        return $ f name rel v rule
-    statey boundVars = do
+        v <- parseValue
+        MPL.symbol sc ":"
+        p <- stateOffset <$> getParserState
+        return $ \rule -> UntypedDescriptorRule p $ f name rel v rule
+    statey = do
         f <- (UTPriorState <$ MPL.symbol sc "?") <|> (UTPostState <$ MPL.symbol sc "!")
-        f <$> stateyBody boundVars
-    stateyBody boundVars = MP.between (MPL.symbol sc "[") (MPL.symbol sc "]") $ flip MP.sepBy1 (MPL.symbol sc ",") $ do
+        f <$> stateyBody
+    stateyBody = MP.between (MPL.symbol sc "[") (MPL.symbol sc "]") $ flip MP.sepBy1 (MPL.symbol sc ",") $ do
         f <- option IsSet $ IsNotSet <$ (MPL.symbol sc "~" <|> MPL.symbol sc "¬")
-        f <$> parseValue boundVars
-    consuming boundVars = do
+        f <$> parseValue
+    consuming = Prefix $ do
         (name, args) <- MP.between (MPL.symbol sc "@" >> MPL.symbol sc "[") (MPL.symbol sc "]") $ do
             name <- parseName
-            args <- many $ parseValue boundVars
+            args <- many $ parseValue
             return (name, args)
-        rule <- MP.between (MPL.symbol sc "(") (MPL.symbol sc ")") $ parseRule'' boundVars
+        MPL.symbol sc ":"
         uuid <- nextUUID
-        return $ UTConsume uuid name args rule
+        p <- stateOffset <$> getParserState
+        return $ \rule -> UntypedDescriptorRule p $ UTConsume uuid name args rule
 
 nextUUID = S.state (\x -> let !x' = x + 1 in (x', x'))
 
 parseOolean :: Parser Oolean
 parseOolean = label "oolean" $ (OolFalse <$ (MPL.symbol sc "false" <|> MPL.symbol sc "⊥")) <|> (OolOol <$ MPL.symbol sc "ool") <|> (OolTrue <$ (MPL.symbol sc "true" <|> MPL.symbol sc "⊤"))
 
-parseValue :: [VarName] -> Parser Value
-parseValue boundVars = label "value" $ do
+parseValue :: Parser Value
+parseValue = label "value" $ do
     v <- parseValue'
-    case v of
-        Variable v' -> if v' `elem` boundVars then return () else fail $ "Variable v" <> quoteIfNeccessary v' <> " is not bound anywhere." where
-                            quoteIfNeccessary v = case T.uncons v of
-                                Nothing -> "\"\""
-                                Just (c, cs) -> if C.isUpper c && T.all C.isAlphaNum cs then T.unpack v else show v
-        _ -> return ()
+    -- case v of
+    --     Variable v' -> if v' `elem` boundVars then return () else fail $ "Variable v" <> quoteIfNeccessary v' <> " is not bound anywhere." where
+    --                         quoteIfNeccessary v = case T.uncons v of
+    --                             Nothing -> "\"\""
+    --                             Just (c, cs) -> if C.isUpper c && T.all C.isAlphaNum cs then T.unpack v else show v
+    --     _ -> return ()
     return v
 
 parseValue' :: Parser Value

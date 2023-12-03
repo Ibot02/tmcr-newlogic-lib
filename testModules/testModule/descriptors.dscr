@@ -2,6 +2,3 @@ flag vName:
     [set vName].
 
 spawn: true.
-
-open vA:
- ?Y -Rel->vA: spawn, spawn.
