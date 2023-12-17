@@ -352,30 +352,49 @@ data Consuming a t = Consuming { getConsuming :: (Map (Set a) t) } deriving (Eq,
 data StateBodies a = StateBodies
         { isSets :: Set a
         , isNotSets :: Set a
+        , othersUnlimited :: Bool
         } deriving (Eq, Ord, Show)
 
 instance (Ord a) => Semigroup (StateBodies a) where
-    StateBodies x y <> StateBodies x' y' = StateBodies (x <> x') (y <> y')
+    StateBodies x y b <> StateBodies x' y' b' = StateBodies (x <> x') (y <> y') (b || b')
 
 instance (Ord a) => Monoid (StateBodies a) where
-    mempty = StateBodies mempty mempty
+    mempty = StateBodies mempty mempty False
 
 sbFromList :: (Ord a) => [StateBody a] -> StateBodies a
-sbFromList xs = StateBodies (S.fromList [v | IsSet v <- xs]) (S.fromList [v | IsNotSet v <- xs])
+sbFromList xs = StateBodies (S.fromList [v | IsSet v <- xs]) (S.fromList [v | IsNotSet v <- xs]) False
 
-newtype Stateful t = Stateful (Map (StateBodies Thingy, StateBodies Thingy) t) --todo
+newtype Stateful t = Stateful (Map (StateBodies Thingy, StateBodies Thingy) t)
     deriving Eq
     deriving Ord
     deriving Show
 
 instance (Lattice t) => Lattice (Stateful t) where
-    meet (Stateful a) (Stateful b) = Stateful $ M.fromList $
-        [((pre <> pre', combinePost $ post <> post'),val `meet` val') | ((pre, post), val) <- M.toList a, ((pre', post'), val') <- M.toList b, doNotConflict (pre <> pre')] where
-        combinePost (StateBodies x y) = StateBodies x (y S.\\ x)
-        doNotConflict (StateBodies xs ys) = null $ S.intersection xs ys
+    meet (Stateful a) (Stateful b) = Stateful $ M.fromList $ do
+            ((StateBodies preT preF preB, StateBodies postT postF postB), val) <- M.toList a
+            ((StateBodies preT' preF' preB', StateBodies postT' postF' postB'), val') <- M.toList b
+            guard $ null $ S.intersection preT preF'
+            guard $ null $ S.intersection preF preT'
+            guard $ not preB || S.isSubsetOf preF' preF
+            guard $ not preB' || S.isSubsetOf preF preF'
+            -- guard $ doNotConflict (post <> post')
+            guard $ null $ S.intersection postT postF'
+            guard $ null $ S.intersection postF postT'
+            guard $ S.isSubsetOf (S.intersection postT preF') postT'
+            guard $ S.isSubsetOf (S.intersection postT' preF) postT
+            guard $ S.isSubsetOf (S.intersection postF preT') postF'
+            guard $ S.isSubsetOf (S.intersection postF' preT) postF
+            let presT = preT <> preT'
+                presF = preF <> preF'
+                presB = preB || preB'
+                postsT = postT <> postT'
+                postsF = postF <> postF'
+                postsB = postB && postB'
+            return ((StateBodies presT presF presB, StateBodies postsT postsF postsB),val `meet` val')
+        -- doNotConflict (StateBodies xs ys b) = null $ S.intersection xs ys
     join (Stateful a) (Stateful b) = Stateful $ M.unionWith join a b
-    top = liftStateful top
-    bottom = liftStateful bottom
+    top = Stateful (M.singleton (StateBodies mempty mempty False, StateBodies mempty mempty True) top)
+    bottom = Stateful mempty
 
 liftStateful :: t -> Stateful t
 liftStateful = Stateful . M.singleton (mempty,mempty)
@@ -417,27 +436,30 @@ instance (EqLattice t) => EqLattice (Stateful t) where
 
 instance (CompLattice t) => CompLattice (Stateful t) where
     composeL (Stateful a) (Stateful b) = Stateful $ M.fromListWith join $ do
-        ((StateBodies preT preF, StateBodies postT postF),v) <- M.toList a
-        ((StateBodies preT' preF', StateBodies postT' postF'), v') <- M.toList b
-        let posts = StateBodies postsT postsF
-            postsT = postT' <> (postT S.\\ postF')
-            postsF = (postF' <> (postF S.\\ postT')) S.\\ presF
-            pres = StateBodies presT presF
-            presT = preT <> (preT' S.\\ postT)
-            presF = preF <> (preF' S.\\ postF)
+        ((StateBodies preT preF preB, StateBodies postT postF postB),v) <- M.toList a
+        ((StateBodies preT' preF' preB', StateBodies postT' postF' postB'), v') <- M.toList b
         guard $ null $ S.intersection preT' postF
         guard $ null $ S.intersection preF' postT
+        guard $ not preB' || S.isSubsetOf postF preF'
+        let posts = StateBodies postsT postsF postsB
+            postsT = postT' <> (postT S.\\ postF')
+            postsF = postF' <> (postF S.\\ postT')
+            postsB = (postB && not preB') || postB'
+            pres = StateBodies presT presF presB
+            presT = preT <> (preT' S.\\ postT)
+            presF = preF <> (preF' S.\\ postF)
+            presB = preB || (preB' && not postB)
         guard $ null $ S.intersection presT presF
         pure ((pres, posts), composeL v v')
 
 instance (CompLattice t) => StatefulLattice [StateBody Thingy] (Stateful t) where
     preState sb = Stateful $ M.fromList $
-        let pre@(StateBodies preT preF) = sbFromList sb in
-        [((pre, StateBodies mempty (S.fromList postF)), top) | postF <- subsequences (S.toList preT)]
+        let pre@(StateBodies preT preF False) = sbFromList sb in
+        [((pre, StateBodies mempty (S.fromList postF) False), top) | postF <- subsequences (S.toList preT)]
     postState sb = Stateful $ M.fromList $ 
-        let (StateBodies postT postF) = sbFromList sb in
-        [((mempty, StateBodies (S.fromList postT') postF), top) | postT' <- subsequences (S.toList postT)]
-    atState sb (Stateful x) = Stateful $ M.singleton mempty $ getJoin $ foldMap (Join . snd) $ M.toList $ M.filterWithKey (\((StateBodies preP _),(StateBodies postP _)) _ -> null preP && all (\case IsSet s -> s `elem` postP; IsNotSet _ -> True) sb) x
+        let (StateBodies postT postF False) = sbFromList sb in
+        [((mempty, StateBodies (S.fromList postT') postF False), top) | postT' <- subsequences (S.toList postT)]
+    atState sb (Stateful x) = Stateful $ M.singleton mempty $ getJoin $ foldMap (Join . snd) $ M.toList $ M.filterWithKey (\((StateBodies preP _ preB),(StateBodies postP postF postB)) _ -> null preP && not preB && (all (\case IsSet s -> s `elem` postP; IsNotSet _ -> True) sb || (postB && all (\case IsSet s -> s `notElem` postF; IsNotSet _ -> True) sb))) x
 
 instance (CompLattice t, Ord a) => CompLattice (Consuming a t) where
     composeL (Consuming x) (Consuming y) = Consuming $ M.fromList $ [(S.union k1 k2, v1 `composeL` v2) | (k1, v1) <- M.toList x, (k2, v2) <- M.toList y]
@@ -450,9 +472,9 @@ instance (StatefulLattice s t, Ord a) => StatefulLattice s (Consuming a t) where
 defaultEval :: forall m t t'. (CompLattice t', Ord t', t ~ (Consuming LockIdent (Stateful (OolAble t'))), MonadEval (LogicValue t Truthy) (LogicValue t County) m) => Eval m (LogicValue t)
 defaultEval = Eval {..} where
     evalConstant :: forall t'. Literal t' -> m (LogicValue t t')
-    evalConstant (TruthyLiteral OolTrue) = return $ top
+    evalConstant (TruthyLiteral OolTrue) = return $ LogicTruthyValue $ liftConsuming $ liftStateful top
     evalConstant (TruthyLiteral OolOol) = return $ LogicTruthyValue $ liftConsuming $ liftStateful outOfLogic
-    evalConstant (TruthyLiteral OolFalse) = return $ bottom
+    evalConstant (TruthyLiteral OolFalse) = return $ LogicTruthyValue $ liftConsuming $ liftStateful bottom
     evalConstant (CountyLiteral Infinite) = return $ top
     evalConstant (CountyLiteral (Finite n)) = return $ LogicCountyValue $ fromNumber n
     evalProduct :: LogicValue t County -> LogicValue t County -> m (LogicValue t County)
