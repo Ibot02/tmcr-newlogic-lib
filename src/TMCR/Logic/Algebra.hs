@@ -150,7 +150,7 @@ class (Lattice t, CountyLattice c) => LogicValues t c where
 
 instance (Lattice t) => LogicValues t (Count t) where
     --scale :: TruthyValue -> CountyValue -> CountyValue
-    scale x (CountyValue bs y) = CountyValue (fmap (meet x) bs) y
+    scale x (CountyValue bs y) = CountyValue (fmap (meet x) bs) $ meet x y
     atLeast Infinite (CountyValue _ x) = x
     atLeast (Finite n) _ | n <= 0 = top
     atLeast (Finite _) (CountyValue [] x) = x

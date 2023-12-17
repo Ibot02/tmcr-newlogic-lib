@@ -2,3 +2,5 @@ flag vName:
     [set vName].
 
 spawn: true.
+
+spawn: ?[S].

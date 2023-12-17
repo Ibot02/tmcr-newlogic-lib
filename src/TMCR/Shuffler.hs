@@ -306,8 +306,6 @@ evalDescriptor eval dt name (Descriptor paramSpec rule) params = maybe (runReade
                 IsSet v -> IsSet <$> valToThingy v
                 IsNotSet v -> IsNotSet <$> valToThingy v) sb
         v <- askAccess t' name params
-        -- s <- evalPriorState eval sb'
-        -- evalSequence eval v s
         evalValueAtState eval t sb' v
     go _ (Constant x) = evalConstant eval x
     go _ (Product a b) = do

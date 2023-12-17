@@ -374,7 +374,7 @@ parseRule' = parseRule'' <* MPL.symbol sc "." where
             MPL.symbol sc "?"
             stateyBody
         return $ UTCanAccess name args st
-    quantifiers = Prefix $ do
+    quantifiers = Prefix $ try $ do
         f <- (UTExist <$ (MPL.symbol sc "?" <|> MPL.symbol sc "∃")) <|> (UTCount <$ MPL.symbol sc "+")
         name <- parseVarName
         rel <- (Forward <$> MP.between (MPL.symbol sc "-") (MPL.symbol sc "->") parseRelName) <|> (Backward <$> MP.between (MPL.symbol sc "<-") (MPL.symbol sc "-") parseRelName)
