@@ -4,3 +4,5 @@ flag vName:
 spawn: true.
 
 spawn: ?[S].
+
+spawn: 3 * 5 * 6 >= 10.

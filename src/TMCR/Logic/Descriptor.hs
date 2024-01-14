@@ -143,7 +143,8 @@ data DescriptorRule (t :: DescriptorType) where
     IsEqual :: Value -> Value -> DescriptorRule Truthy
     CallDescriptor :: SDescriptorType t -> Name -> [Value] -> DescriptorRule t
     CanAccess :: SDescriptorType t -> Name -> [Value] -> [StateBody Value] -> DescriptorRule t
-    Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County
+    --Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County  -- removed due to being buggy and no know use cases - we'll have scale instead
+    Scale :: DescriptorRule County -> Nteger -> DescriptorRule County
     Sum :: [DescriptorRule County] -> DescriptorRule County
     AtLeast :: DescriptorRule County -> Nteger -> DescriptorRule Truthy
     Exist :: VarName -> Relation -> Value -> DescriptorRule Truthy -> DescriptorRule Truthy
@@ -192,7 +193,8 @@ data UntypedDescriptorRule' =
     | UTIsEqual Value Value
     | UTCallDescriptor Name [Value]
     | UTCanAccess Name [Value] [StateBody Value]
-    | UTProduct UntypedDescriptorRule UntypedDescriptorRule
+    -- | UTProduct UntypedDescriptorRule UntypedDescriptorRule
+    | UTScale UntypedDescriptorRule Nteger
     | UTSum [UntypedDescriptorRule]
     | UTAtLeast UntypedDescriptorRule Nteger
     | UTExist VarName Relation Value UntypedDescriptorRule
@@ -277,11 +279,15 @@ typecheck boundVars (UntypedDescriptorRule pos (UTCanAccess name args states)) s
         County -> case s of
             STruthy -> strErrorWithPos pos $ "Was expecting a Truthy value, but access to descriptor `" <> T.unpack name <> "` has type County."
             SCounty -> return $ CanAccess SCounty name args states
-typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
-typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) SCounty = do
+-- typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but product is County."
+-- typecheck boundVars (UntypedDescriptorRule pos (UTProduct x y)) SCounty = do
+--     x' <- typecheck boundVars x SCounty
+--     y' <- typecheck boundVars y SCounty
+--     return $ Product x' y'
+typecheck boundVars (UntypedDescriptorRule pos (UTScale x y)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but scale is County."
+typecheck boundVars (UntypedDescriptorRule pos (UTScale x y)) SCounty = do
     x' <- typecheck boundVars x SCounty
-    y' <- typecheck boundVars y SCounty
-    return $ Product x' y'
+    return $ Scale x' y
 typecheck boundVars (UntypedDescriptorRule pos (UTSum xs)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but sum is County."
 typecheck boundVars (UntypedDescriptorRule pos (UTSum xs)) SCounty = do
     xs' <- traverse (flip (typecheck boundVars) SCounty) xs
@@ -333,9 +339,9 @@ castIfNeccessary SCounty = Cast
 
 parseRule' :: Parser UntypedDescriptorRule
 parseRule' = parseRule'' <* MPL.symbol sc "." where
-    parseRule'' = makeExprParser terms ops
+    parseRule'' = makeExprParser (terms <|> parenthesised) ops
     ops = [ [quantifiers, consuming]
-          , [binary "*" UTProduct]
+          , [scaleOps]--[binary "*" UTProduct]
           , [binary' "+" UTSum]
           , [atLeastOp]
           , [binary' "," UTMin]
@@ -351,10 +357,17 @@ parseRule' = parseRule'' <* MPL.symbol sc "." where
         n <- parseNteger
         p <- stateOffset <$> getParserState
         return (\x -> UntypedDescriptorRule p $ UTAtLeast x n)
+    scaleOps = Postfix $ foldr1 (.) <$> some scale
+    scale = do
+        MPL.symbol sc "*" <|> MPL.symbol sc "·" <|> MPL.symbol sc "⋅"
+        n <- parseNteger
+        p <- stateOffset <$> getParserState
+        return (\x -> UntypedDescriptorRule p $ UTScale x n)
     terms = do
         p <- stateOffset <$> getParserState
         UntypedDescriptorRule p <$> terms'
     terms' = try $ (UTConstant <$> constant) <|> isEqual <|> call <|> canAccess <|> statey
+    parenthesised = MP.between (MPL.symbol sc "(") (MPL.symbol sc ")") parseRule''
     constant = (UTNteger <$> parseNteger) <|> (UTOolean <$> parseOolean)
     isEqual = try $ do
         v <- parseValue

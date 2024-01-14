@@ -86,7 +86,8 @@ class (Monad m) => MonadEval t c m | m -> t c where
 
 data Eval m (v :: DescriptorType -> *) = Eval {
       evalConstant :: forall t. Literal t -> m (v t)
-    , evalProduct :: v County -> v County -> m (v County)
+    --, evalProduct :: v County -> v County -> m (v County)
+    , evalScale :: v County -> Nteger -> m (v County)
     , evalSum :: [v County] -> m (v County)
     , evalAtLeast :: v County -> Nteger -> m (v Truthy)
     , evalExists :: Relation -> Thingy -> (Thingy -> m (v Truthy)) -> m (v Truthy)
@@ -234,7 +235,7 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
       _2 <>= [AccessDependency (name, params)]
       case n of
           Nothing -> return bottom
-          Just (S.toList -> n) -> fmap (foldr (\x a -> addCounty a $ scale x $ fromNumber 1) bottom) $ traverse askLogicNodeAccess n
+          Just (S.toList -> n) -> fmap (foldr (\x a -> addCounty a $ cast x) bottom) $ traverse askLogicNodeAccess n
     askLogicNodeAccess name = do
         val <- use $ _1 . logicNodes . at name
         case val of
@@ -308,10 +309,13 @@ evalDescriptor eval dt name (Descriptor paramSpec rule) params = maybe (runReade
         v <- askAccess t' name params
         evalValueAtState eval t sb' v
     go _ (Constant x) = evalConstant eval x
-    go _ (Product a b) = do
-        x <- goC a
-        y <- goC b
-        evalProduct eval x y
+    -- go _ (Product a b) = do
+    --     x <- goC a
+    --     y <- goC b
+    --     evalProduct eval x y
+    go _ (Scale x y) = do
+        x' <- goC x
+        evalScale eval x' y
     go _ (Sum as) = traverse goC as >>= evalSum eval
     go _ (AtLeast a n) = do
         x <- goC a
@@ -364,26 +368,33 @@ instance (Ord a) => Monoid (StateBodies a) where
 sbFromList :: (Ord a) => [StateBody a] -> StateBodies a
 sbFromList xs = StateBodies (S.fromList [v | IsSet v <- xs]) (S.fromList [v | IsNotSet v <- xs]) False
 
-newtype Stateful t = Stateful (Map (StateBodies Thingy, StateBodies Thingy) t)
+newtype Stateful t = Stateful (Map (StateBodies Thingy, StateBodies Thingy) t) -- invariant: for all keys, the concerned states in the pre- and post-conditions are the same (union of isSet and isNotSet)
     deriving Eq
     deriving Ord
     deriving Show
 
 instance (Lattice t) => Lattice (Stateful t) where
-    meet (Stateful a) (Stateful b) = Stateful $ M.fromList $ do
+    meet (Stateful a) (Stateful b) = Stateful $ M.fromListWith join $ do
             ((StateBodies preT preF preB, StateBodies postT postF postB), val) <- M.toList a
             ((StateBodies preT' preF' preB', StateBodies postT' postF' postB'), val') <- M.toList b
-            guard $ null $ S.intersection preT preF'
-            guard $ null $ S.intersection preF preT'
-            guard $ not preB || S.isSubsetOf preF' preF
-            guard $ not preB' || S.isSubsetOf preF preF'
-            -- guard $ doNotConflict (post <> post')
-            guard $ null $ S.intersection postT postF'
-            guard $ null $ S.intersection postF postT'
-            guard $ S.isSubsetOf (S.intersection postT preF') postT'
-            guard $ S.isSubsetOf (S.intersection postT' preF) postT
-            guard $ S.isSubsetOf (S.intersection postF preT') postF'
-            guard $ S.isSubsetOf (S.intersection postF' preT) postF
+            let concerned = preT `S.union` preF
+                concerned' = preT' `S.union` preF'
+                concernedBoth = concerned `S.intersection` concerned'
+                concernedEither = concerned `S.union` concerned'
+                rBoth = S.intersection concernedBoth
+                rLeft = S.intersection (concerned S.\\ concerned')
+                rRight = S.intersection (concerned' S.\\ concerned)
+            guard $ (rBoth <$> [preT, preF, postT, postF]) == (rBoth <$> [preT', preF', postT', postF'])
+            guard $ case (preB, postB) of
+                (True, True) -> null $ rRight preF' -- allow high and falling connections only
+                (True, False) -> null $ rRight $ preF' `S.union` postF' -- allow high connections only
+                (False, False) -> null $ rRight $ S.intersection preF' postT' `S.union` S.intersection preT' postF' -- allow same connections only
+                (False, True) -> True -- no restrictions
+            guard $ case (preB', postB') of
+                (True, True) -> null $ rLeft preF -- allow high and falling connections only
+                (True, False) -> null $ rLeft $ preF `S.union` postF -- allow high connections only
+                (False, False) -> null $ rLeft $ S.intersection preF postT `S.union` S.intersection preT postF -- allow same connections only
+                (False, True) -> True -- no restrictions
             let presT = preT <> preT'
                 presF = preF <> preF'
                 presB = preB || preB'
@@ -391,7 +402,6 @@ instance (Lattice t) => Lattice (Stateful t) where
                 postsF = postF <> postF'
                 postsB = postB && postB'
             return ((StateBodies presT presF presB, StateBodies postsT postsF postsB),val `meet` val')
-        -- doNotConflict (StateBodies xs ys b) = null $ S.intersection xs ys
     join (Stateful a) (Stateful b) = Stateful $ M.unionWith join a b
     top = Stateful (M.singleton (StateBodies mempty mempty False, StateBodies mempty mempty True) top)
     bottom = Stateful mempty
@@ -435,7 +445,7 @@ instance (EqLattice t) => EqLattice (Stateful t) where
 
 
 instance (CompLattice t) => CompLattice (Stateful t) where
-    composeL (Stateful a) (Stateful b) = Stateful $ M.fromListWith join $ do
+    composeL (Stateful a) (Stateful b) = Stateful $ M.fromListWith join $ do --todo: invariant
         ((StateBodies preT preF preB, StateBodies postT postF postB),v) <- M.toList a
         ((StateBodies preT' preF' preB', StateBodies postT' postF' postB'), v') <- M.toList b
         guard $ null $ S.intersection preT' postF
@@ -453,13 +463,36 @@ instance (CompLattice t) => CompLattice (Stateful t) where
         pure ((pres, posts), composeL v v')
 
 instance (CompLattice t) => StatefulLattice [StateBody Thingy] (Stateful t) where
-    preState sb = Stateful $ M.fromList $
-        let pre@(StateBodies preT preF False) = sbFromList sb in
-        [((pre, StateBodies mempty (S.fromList postF) False), top) | postF <- subsequences (S.toList preT)]
-    postState sb = Stateful $ M.fromList $ 
-        let (StateBodies postT postF False) = sbFromList sb in
-        [((mempty, StateBodies (S.fromList postT') postF False), top) | postT' <- subsequences (S.toList postT)]
-    atState sb (Stateful x) = Stateful $ M.singleton mempty $ getJoin $ foldMap (Join . snd) $ M.toList $ M.filterWithKey (\((StateBodies preP _ preB),(StateBodies postP postF postB)) _ -> null preP && not preB && (all (\case IsSet s -> s `elem` postP; IsNotSet _ -> True) sb || (postB && all (\case IsSet s -> s `notElem` postF; IsNotSet _ -> True) sb))) x
+    -- preState sb = Stateful $ M.fromList $
+    --     let pre@(StateBodies preT preF False) = sbFromList sb in
+    --     [((pre, StateBodies mempty (S.fromList postF) False), top) | postF <- subsequences (S.toList preT)]
+    preState sb = getMeet $ foldMap (\case
+        IsSet s -> let opts = [(S.singleton s, mempty), (mempty, S.singleton s)] in
+            Meet $ Stateful $ M.fromList $ [((StateBodies (S.singleton s) mempty False, StateBodies a b False), top) | (a,b) <- opts]
+        IsNotSet s -> Meet $ Stateful $ M.fromList $ [((StateBodies mempty (S.singleton s) False, StateBodies mempty (S.singleton s) False), top)]
+        ) sb
+    -- postState sb = Stateful $ M.fromList $ 
+    --     let (StateBodies postT postF False) = sbFromList sb in
+    --     [((mempty, StateBodies (S.fromList postT') postF False), top) | postT' <- subsequences (S.toList postT)]
+    postState sb = getMeet $ foldMap (\case
+        IsSet s -> let opts = [(S.singleton s, mempty), (mempty, S.singleton s)] in
+            Meet $ Stateful $ M.fromList $ [((StateBodies a b False, StateBodies c d False), top) | (a,b) <- opts, (c,d) <- opts]
+        IsNotSet s -> let opts = [(S.singleton s, mempty), (mempty, S.singleton s)] in
+            Meet $ Stateful $ M.fromList $ [((StateBodies a b False, StateBodies mempty (S.singleton s) False), top) | (a,b) <- opts]
+        ) sb
+    atState sb (Stateful x) = Stateful $
+        M.singleton mempty $
+        getJoin $
+        foldMap Join $
+        -- foldMap (Join . snd) $
+        -- M.toList $
+        M.filterWithKey (
+            \(StateBodies preP _ preB,StateBodies postP postF postB) _ ->
+                null preP && not preB && --no pre-state requirements, we assume we're coming from no state
+                (  (not postB && all (\case IsSet s -> s `elem` postP; IsNotSet s -> s `notElem` postP) sb)
+                || (postB && all (\case IsSet s -> s `notElem` postF; IsNotSet s -> s `elem` postF) sb)
+            ))
+        x
 
 instance (CompLattice t, Ord a) => CompLattice (Consuming a t) where
     composeL (Consuming x) (Consuming y) = Consuming $ M.fromList $ [(S.union k1 k2, v1 `composeL` v2) | (k1, v1) <- M.toList x, (k2, v2) <- M.toList y]
@@ -475,10 +508,15 @@ defaultEval = Eval {..} where
     evalConstant (TruthyLiteral OolTrue) = return $ LogicTruthyValue $ liftConsuming $ liftStateful top
     evalConstant (TruthyLiteral OolOol) = return $ LogicTruthyValue $ liftConsuming $ liftStateful outOfLogic
     evalConstant (TruthyLiteral OolFalse) = return $ LogicTruthyValue $ liftConsuming $ liftStateful bottom
-    evalConstant (CountyLiteral Infinite) = return $ top
-    evalConstant (CountyLiteral (Finite n)) = return $ LogicCountyValue $ fromNumber n
-    evalProduct :: LogicValue t County -> LogicValue t County -> m (LogicValue t County)
-    evalProduct x y = return $ multiplyCounty x y
+    evalConstant (CountyLiteral n) = do
+        t <- evalConstant (TruthyLiteral OolTrue)
+        return $ cast t `scaleC` n
+    -- evalConstant (CountyLiteral Infinite) = return $ top
+    -- evalConstant (CountyLiteral (Finite n)) = return $ LogicCountyValue $ fromNumber n
+    -- evalProduct :: LogicValue t County -> LogicValue t County -> m (LogicValue t County)
+    -- evalProduct x y = return $ multiplyCounty x y
+    evalScale :: LogicValue t County -> Nteger -> m (LogicValue t County)
+    evalScale x n = return $ x `scaleC` n
     evalSum :: [LogicValue t County] -> m (LogicValue t County)
     evalSum = return . foldr addCounty bottom
     evalAtLeast :: LogicValue t County -> Nteger -> m (LogicValue t Truthy)
@@ -492,9 +530,9 @@ defaultEval = Eval {..} where
     evalCount rel t p = do
         xs <- askShuffle rel t
         ys <- forM xs $ \(a,n) -> do
-            n' <- evalConstant @'County (CountyLiteral n)
+--            n' <- evalConstant @'County (CountyLiteral n)
             a' <- p a
-            return $ scale a' n'
+            return $ scaleC (cast a') n
         evalSum ys
     evalMin :: forall t'. SDescriptorType t' -> [LogicValue t t'] -> m (LogicValue t t')
     evalMin STruthy = return . foldr meet top
@@ -503,7 +541,7 @@ defaultEval = Eval {..} where
     evalMax STruthy = return . foldr join bottom
     evalMax SCounty = return . foldr join bottom
     evalCast :: LogicValue t Truthy -> m (LogicValue t County)
-    evalCast = return . (`scale` top)
+    evalCast = return . cast
     evalPriorState :: [StateBody Thingy] -> m (LogicValue t Truthy)
     evalPriorState sb = return $ preState sb
     evalPostState :: [StateBody Thingy] -> m (LogicValue t Truthy)

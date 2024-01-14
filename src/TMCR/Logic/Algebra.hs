@@ -132,7 +132,8 @@ andThen a (CountyValue b c) = CountyValue (a:b) c
 class (Lattice a) => CountyLattice a where
     fromNumber :: Int -> a
     addCounty :: a -> a -> a
-    multiplyCounty :: a -> a -> a
+    --multiplyCounty :: a -> a -> a
+    scaleC :: a -> Nteger -> a
 
 instance (Lattice t) => CountyLattice (Count t) where
     fromNumber n = CountyValue (replicate n top) bottom
@@ -141,21 +142,25 @@ instance (Lattice t) => CountyLattice (Count t) where
     addCounty x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `join` b) `andThen` addCounty x' (CountyValue bs y)
     addCounty (CountyValue (a:as) x) y'@(CountyValue [] y) = (a `join` y) `andThen` addCounty (CountyValue as x) y'
     addCounty x'@(CountyValue (a:as) x) y'@(CountyValue (b:bs) y) = (a `join` b) `andThen` meet (addCounty (CountyValue as x) y') (addCounty x' (CountyValue bs y))
-    multiplyCounty (CountyValue [] x) y = scale x y
-    multiplyCounty (CountyValue (a:as) x) y = scale a y `addCounty` multiplyCounty (CountyValue as x) y
+    -- multiplyCounty (CountyValue [] x) y = scale x y
+    -- multiplyCounty (CountyValue (a:as) x) y = scale a y `addCounty` multiplyCounty (CountyValue as x) y
+    scaleC x'@(CountyValue [] _) _ = x'
+    scaleC (CountyValue (x:_) _) Infinite = CountyValue [] x
+    scaleC (CountyValue xs x) (Finite n) = CountyValue (xs >>= replicate n) x
 
 class (Lattice t, CountyLattice c) => LogicValues t c where
-    scale :: t -> c -> c
     atLeast :: Nteger -> c -> t
+    cast :: t -> c
 
 instance (Lattice t) => LogicValues t (Count t) where
     --scale :: TruthyValue -> CountyValue -> CountyValue
-    scale x (CountyValue bs y) = CountyValue (fmap (meet x) bs) $ meet x y
+    -- scale x (CountyValue bs y) = CountyValue (fmap (meet x) bs) $ meet x y
     atLeast Infinite (CountyValue _ x) = x
     atLeast (Finite n) _ | n <= 0 = top
     atLeast (Finite _) (CountyValue [] x) = x
     atLeast (Finite 1) (CountyValue (a:_ ) _) = a
     atLeast (Finite n) (CountyValue (_:as) x) = atLeast (Finite $ n-1) (CountyValue as x)
+    cast x = CountyValue [x] bottom
 
 data LogicValue t :: DescriptorType -> * where
     LogicTruthyValue :: t -> LogicValue t Truthy
@@ -192,11 +197,13 @@ instance (Lattice t) => Lattice (LogicValue t County) where
 instance (Lattice t) => CountyLattice (LogicValue t County) where
     fromNumber n = LogicCountyValue $ fromNumber n
     LogicCountyValue x `addCounty` LogicCountyValue y = LogicCountyValue $ x `addCounty` y
-    LogicCountyValue x `multiplyCounty` LogicCountyValue y = LogicCountyValue $ x `multiplyCounty` y
+    --LogicCountyValue x `multiplyCounty` LogicCountyValue y = LogicCountyValue $ x `multiplyCounty` y
+    LogicCountyValue x `scaleC` n = LogicCountyValue $ x `scaleC` n
 
 instance (Lattice t) => LogicValues (LogicValue t Truthy) (LogicValue t County) where
-    scale (LogicTruthyValue x) (LogicCountyValue y) = LogicCountyValue $ scale x y
+    --scale (LogicTruthyValue x) (LogicCountyValue y) = LogicCountyValue $ scale x y
     atLeast n (LogicCountyValue x) = LogicTruthyValue $ atLeast n x
+    cast (LogicTruthyValue x) = LogicCountyValue $ cast x
 
 latticeFromMaybe Nothing = bottom
 latticeFromMaybe (Just x) = x
