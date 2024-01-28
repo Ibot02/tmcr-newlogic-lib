@@ -52,16 +52,16 @@ import Data.List (subsequences, (\\))
 --logic nodes, with reachability values
 
 data ShuffleProgress t c = ShuffleProgress {
-      _shuffles :: Map ShuffleName ShuffleValue
+      _shuffles :: ShufflesProgress
     , _truthyDescriptors :: Map (DescriptorIdent Truthy, [Thingy]) t
     , _countyDescriptors :: Map (DescriptorIdent County, [Thingy]) c
     , _logicNodes :: Map LogicNodeName t
     , _cachedAccess :: Map (DescriptorName, [Thingy]) (Set LogicNodeName)
     , _cachedDependencies :: Bipartite ShuffleDependency ShuffleDependend
-    } deriving (Eq, Ord, Show)
+    } deriving (Eq, Show)
 
-initialShuffleProgress :: GameDef -> ShuffleProgress t c
-initialShuffleProgress def = ShuffleProgress (def ^. defShuffles . to (fmap (\(x,y) -> ShuffleValue (Remaining x) (fmap Remaining y)))) M.empty M.empty M.empty M.empty mempty
+initialShuffleProgress :: GameDef -> RandomSeed -> ShuffleProgress t c
+initialShuffleProgress def seed = ShuffleProgress (def ^. defShuffles . to (convertShuffles seed)) M.empty M.empty M.empty M.empty mempty
 
 data ShuffleDependend =
       DescriptorDependend (DescriptorName, [Thingy])
@@ -244,11 +244,11 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
                 return bottom
             Just x -> return x
     askShuffle rel x = do
-        --todo: add shuffle dependency
-        fmap (maybe [] (`getAllPartial` condition)) $ use (_1 . shuffles . at name) where
-        (name, condition) = case rel of
-            Forward name -> (name, (True, x))
-            Backward name -> (name, (False, x))
+        let (name, condition) = case rel of
+                Forward name -> (name, (True, x))
+                Backward name -> (name, (False, x))
+        _2 <>= [ShuffleDependency name]
+        use $ _1 . shuffles . to (\x -> getAllPartial x name condition)
 
 newtype Lift (t :: (* -> *) -> * -> *) m a = Lift { unLift :: t m a }
         deriving newtype ( Functor

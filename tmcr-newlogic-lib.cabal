@@ -49,6 +49,7 @@ library
     , polysemy
     , algebraic-graphs
     , free
+    , random
   if !impl(ghcjs)
     build-depends:
       yaml
