@@ -37,6 +37,24 @@ import qualified Data.Set as S
 import Control.Monad hiding (join)
 
 import Control.Lens
+    ( Identity(runIdentity),
+      Traversal',
+      _Just,
+      makeLenses,
+      At(at),
+      Ixed(ix),
+      Field1(_1),
+      Field2(_2),
+      (^?!),
+      (^.),
+      to,
+      use,
+      view,
+      (<<.=),
+      (%=),
+      (%~),
+      (.=),
+      (<>=) )
 import Control.Lens.TH
 import Control.Monad.Trans
 import Control.Monad.RWS (RWST(..), MonadState(..), MonadWriter(..), execRWST, gets)
@@ -46,6 +64,7 @@ import TMCR.Logic.Merge
 
 import Data.Coerce (coerce)
 import Data.List (subsequences, (\\))
+import Data.Maybe (catMaybes)
 
 --descriptors, with all parameters specified, with reachability (and maybe sphere) values (truthy descriptors) or reachable counts (county descriptors)
 --shuffles, hierarchical multi relations
@@ -57,15 +76,16 @@ data ShuffleProgress t c = ShuffleProgress {
     , _countyDescriptors :: Map (DescriptorIdent County, [Thingy]) c
     , _logicNodes :: Map LogicNodeName t
     , _cachedAccess :: Map (DescriptorName, [Thingy]) (Set LogicNodeName)
-    , _cachedDependencies :: Bipartite ShuffleDependency ShuffleDependend
+    , _cachedDependencies :: Bipartite ShuffleDependency ShuffleDependent
     } deriving (Eq, Show)
 
 initialShuffleProgress :: GameDef -> RandomSeed -> ShuffleProgress t c
-initialShuffleProgress def seed = ShuffleProgress (def ^. defShuffles . to (convertShuffles seed)) M.empty M.empty M.empty M.empty mempty
+initialShuffleProgress def seed = ShuffleProgress (def ^. defShuffles . to (convertShuffles (def ^. defLogicData) seed)) M.empty M.empty M.empty M.empty mempty
 
-data ShuffleDependend =
-      DescriptorDependend (DescriptorName, [Thingy])
+data ShuffleDependent =
+      DescriptorDependent (DescriptorName, [Thingy])
     | LogicNodeDependent LogicNodeName
+    | ShuffleDependent ShuffleStepIdent
     deriving (Eq, Ord, Show)
 
 data ShuffleDependency =
@@ -129,10 +149,10 @@ definedDescriptor :: DescriptorIdent t -> Traversal' Definitions [Descriptor t]
 definedDescriptor name@(TruthyDescriptorIdent _) = truthyDescriptorDefinitions . ix name
 definedDescriptor name@(CountyDescriptorIdent _) = countyDescriptorDefinitions . ix name
 
-updateLocal :: (Eq (v Truthy), Eq (v County), Lattice (v Truthy), Lattice (v County), LogicValues (v Truthy) (v County)) => Definitions -> (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> ShuffleDependend -> ShuffleProgress (v Truthy) (v County) -> (ShuffleProgress (v Truthy) (v County), [ShuffleDependend])
+updateLocal :: (Eq (v Truthy), Eq (v County), Lattice (v Truthy), Lattice (v County), LogicValues (v Truthy) (v County)) => Definitions -> (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> ShuffleDependent -> ShuffleProgress (v Truthy) (v County) -> (ShuffleProgress (v Truthy) (v County), [ShuffleDependent])
 updateLocal defs eval object progress = runUpdate defs progress $ case object of
-    -- DescriptorDependend (i@(TruthyDescriptorIdent name), params) -> evalMax eval STruthy $ fmap (goT . applyParams params) $ lookupDescriptors i defs
-    -- DescriptorDependend (i@(CountyDescriptorIdent name), params) -> evalMax eval SCounty $ fmap (goC . applyParams params) $ lookupDescriptors i defs
+    -- DescriptorDependent (i@(TruthyDescriptorIdent name), params) -> evalMax eval STruthy $ fmap (goT . applyParams params) $ lookupDescriptors i defs
+    -- DescriptorDependent (i@(CountyDescriptorIdent name), params) -> evalMax eval SCounty $ fmap (goC . applyParams params) $ lookupDescriptors i defs
     LogicNodeDependent name -> do
         incomingEdges <- view $ definedEdgesTo (Just name)
         ts <- forM incomingEdges $ \(source, edge) -> do
@@ -145,7 +165,7 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
             evalSequence eval STruthy t t'
         let t = getJoin $ foldMap Join ts
         updateLogicNode name t
-    DescriptorDependend (name, params) -> do
+    DescriptorDependent (name, params) -> do
         descType <- asks (^?! definedDescriptorType name)
         -- spec <- asks (^? definedDescriptorConsumesSpec name)
         case descType of
@@ -163,16 +183,27 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
                 updateCountyDescriptor (name, params) t
             -- (Truthy, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (TruthyDescriptorIdent lock, params) >>= updateTruthyDescriptor (name, params)
             -- (County, Just (DescriptorConsumeSpec key lock)) -> deferConsumer eval (CountyDescriptorIdent lock, params) >>= updateCountyDescriptor (name, params)
+    ShuffleDependent ident -> do
+        currentShuffles <- use $ _1 . shuffles
+        let (ShuffleStepResult shuffles' deps didUpdate) = stepShuffle currentShuffles ident
+        _1 . shuffles .= shuffles'
+        tell $ ShuffleDependent <$> deps
+        let shuffleName = associatedShuffle ident
+        _1 . cachedDependencies %= bipSetEdgesTo (ShuffleDependent ident) (ShuffleDependency . associatedShuffle <$> deps)
+        when didUpdate $ do
+            xs <- use $ _1 . cachedDependencies . to (bipGetEdgesFrom  $ ShuffleDependency shuffleName)
+            tell xs
 
-newtype UpdateT v m a = UpdateT { extractUpdate :: RWST Definitions [ShuffleDependend] (ShuffleProgress (v Truthy) (v County), [ShuffleDependency]) m a }
+
+newtype UpdateT v m a = UpdateT { extractUpdate :: RWST Definitions [ShuffleDependent] (ShuffleProgress (v Truthy) (v County), [ShuffleDependency]) m a }
                       deriving newtype ( MonadReader Definitions )
                       deriving newtype ( MonadState (ShuffleProgress (v Truthy) (v County), [ShuffleDependency]))
-                      deriving newtype ( MonadWriter [ShuffleDependend])
+                      deriving newtype ( MonadWriter [ShuffleDependent])
                       deriving newtype Functor
                       deriving newtype Applicative
                       deriving newtype Monad
 
-runUpdate :: (Eq (v Truthy), Eq (v County)) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v Identity () -> (ShuffleProgress (v Truthy) (v County), [ShuffleDependend])
+runUpdate :: (Eq (v Truthy), Eq (v County)) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v Identity () -> (ShuffleProgress (v Truthy) (v County), [ShuffleDependent])
 runUpdate defs progress update = _1 %~ fst $ runIdentity $ execRWST (extractUpdate update) defs (progress, [])
 
 updateLogicNode :: (Monad m, Eq (v Truthy)) => LogicNodeName -> v Truthy -> UpdateT v m ()
@@ -193,7 +224,7 @@ updateCountyDescriptor :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy])
 updateCountyDescriptor desc@(name, params) value = do
     deps <- _2 <<.= []
     value' <- _1 . countyDescriptors . at (CountyDescriptorIdent name, params) <<.= Just value
-    _1 . cachedDependencies %= bipSetEdgesTo (DescriptorDependend desc) deps
+    _1 . cachedDependencies %= bipSetEdgesTo (DescriptorDependent desc) deps
     when (value' /= Just value) $ do
         w <- gets (^. _1 . cachedDependencies . to (bipGetEdgesFrom (DescriptorDependency desc)))
         tell w
@@ -202,7 +233,7 @@ updateTruthyDescriptor :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy])
 updateTruthyDescriptor desc@(name, params) value = do
     deps <- _2 <<.= []
     value' <- _1 . truthyDescriptors . at (TruthyDescriptorIdent name, params) <<.= Just value
-    _1 . cachedDependencies %= bipSetEdgesTo (DescriptorDependend desc) deps
+    _1 . cachedDependencies %= bipSetEdgesTo (DescriptorDependent desc) deps
     when (value' /= Just value) $ do
         w <- gets (^. _1 . cachedDependencies . to (bipGetEdgesFrom (DescriptorDependency desc)))
         tell w
@@ -213,7 +244,7 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
         _2 <>= [DescriptorDependency (name', params)]
         case val of
             Nothing -> do
-                tell $ [DescriptorDependend (name', params)]
+                tell $ [DescriptorDependent (name', params)]
                 return bottom
             Just x -> return x
     askCountyDescriptor name@(CountyDescriptorIdent name') params = do
@@ -221,7 +252,7 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
         _2 <>= [DescriptorDependency (name', params)]
         case val of
             Nothing -> do
-                tell $ [DescriptorDependend (name', params)]
+                tell $ [DescriptorDependent (name', params)]
                 return bottom
             Just x -> return x
     askAccessTruthy name params = do

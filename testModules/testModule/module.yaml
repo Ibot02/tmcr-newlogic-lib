@@ -67,7 +67,7 @@ provides:
   logic:
     - logic.logic
   shuffles:
-    - shuffles.shuff
+    - shuffles.shuf
   data:
     - data.json
   patches: []

@@ -25,7 +25,8 @@ provides:
     - descriptors.dscr
   logic:
     - "logic/*.logic"
-  shuffles: []
+  shuffles:
+    - "shuffles/*.shuf"
   data:
     - "logic/*.json"
   patches: []

@@ -81,6 +81,8 @@ parseNteger = (Infinite <$ (MPL.symbol sc "inf" <|> MPL.symbol sc "∞")) <|> (F
 type RelName = Text
 
 parseRelName :: ParserCT c m RelName
-parseRelName = fmap T.pack $ (:) <$> MP.upperChar <*> many MP.alphaNumChar
+parseRelName = MPL.lexeme sc parseRelName'
+parseRelName' :: ParserCT c m RelName
+parseRelName' = fmap T.pack $ (:) <$> MP.upperChar <*> many MP.alphaNumChar
 
 type Thingy = PossiblyScopedName

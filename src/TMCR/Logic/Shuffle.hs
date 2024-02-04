@@ -37,6 +37,7 @@ import Control.Lens.TH
 import Control.Monad.Reader (MonadReader, runReader)
 import Data.List (partition)
 import Data.Maybe (catMaybes)
+import TMCR.Logic.Data (LogicData, DataLookup, parseDataLookup, evalDataLookup)
 
 type Parser = ParserC ()
 
@@ -81,96 +82,6 @@ data SetSpec = SetSpec (M.Map PossiblyScopedName Nteger)
     deriving (Eq, Ord, Show)
 
 type ShuffleName = Text
-
-data DataLookup = DataLookup {
-      location :: [DataStep]
-    , foreach :: Maybe ([DataStep], DataTarget)
-    , collect :: ([DataStep], DataTarget)
-    } deriving (Eq, Ord, Show)
-
-data DataStep =
-      DataTraverse DataTraverseStep
-    | DataFilter DataFilterStep
-    deriving (Eq, Ord, Show)
-
-data DataTraverseStep = DataTraverseStep {
-      traverseAttribute :: Name
-    , traversalScoping :: Maybe Name
-    } deriving (Eq, Ord, Show)
-
-data DataFilterStep = DataFilterStep {
-      filterLocation :: [DataStep]
-    , filterAttribute :: DataTarget
-    , filterCondition :: FilterCondition
-    } deriving (Eq, Ord, Show)
-
-data FilterCondition = --do we want any other filters? e.g. matching regex?
-    FilterEQ PossiblyScopedName
-    deriving (Eq, Ord, Show)
-
-data DataTarget = DataTarget {
-      targetedAttribute :: Name
-    , targetScoping :: TargetScoping
-    } deriving (Eq, Ord, Show)
-
-data TargetScoping = TargetUnscoped | TargetScoped | TargetGlobal
-    deriving (Eq, Ord, Show, Enum, Bounded)
-
-parseDataLookup :: Parser DataLookup
-parseDataLookup = do
-    loc <- parseDataSteps
-    f <- MP.optional $ do
-        MPL.symbol sc "foreach"
-        parseDataStepsToTarget
-    MPL.symbol sc "collect"
-    c <- parseDataStepsToTarget
-    return $ DataLookup loc f c
-
-parseDataSteps :: Parser [DataStep]
-parseDataSteps = parseDataStep `sepBy` MPL.symbol sc ","
-
-parseDataStepsToTarget :: Parser ([DataStep], DataTarget)
-parseDataStepsToTarget = do
-    loc <- many (parseDataStep <* MPL.symbol sc ",")
-    t <- parseDataTarget
-    return (loc, t)
-
-parseDataStep :: Parser DataStep
-parseDataStep = (DataFilter <$> parseDataFilterStep) <|> (DataTraverse <$> parseDataTraverseStep)
-
-parseDataFilterStep :: Parser DataFilterStep
-parseDataFilterStep = do
-    MPL.symbol sc "filter"
-    MPL.symbol sc "any"
-    (loc, t) <- parseDataStepsToTarget
-    c <- parseFilterCondition
-    return $ DataFilterStep loc t c
-
-parseFilterCondition :: Parser FilterCondition
-parseFilterCondition = parseFilterEq where
-    parseFilterEq = do
-        MPL.symbol sc "is"
-        FilterEQ <$> parsePossiblyScopedName
-
-parseDataTraverseStep :: Parser DataTraverseStep
-parseDataTraverseStep = do
-    n <- parseDataAttrName
-    scope <- MP.optional $ do
-                MPL.symbol sc "by"
-                parseDataAttrName
-    return $ DataTraverseStep n scope
-
-parseDataTarget :: Parser DataTarget
-parseDataTarget = do
-    scope <- (TargetUnscoped <$ MPL.symbol sc "unscoped") <|> (TargetScoped <$ MPL.symbol sc "local") <|> (TargetGlobal <$ MPL.symbol sc "global")
-    attr <- parseDataAttrName
-
-    return $ DataTarget attr scope
-
-parseDataAttrName :: Parser Name
-parseDataAttrName = MPL.lexeme sc parseDataAttrName'
-parseDataAttrName' :: Parser Name
-parseDataAttrName' = fmap T.pack $ MP.single '\'' *> MP.manyTill MPL.charLiteral (MP.single '\'')
 
 parseShuffleInstruction :: Parser ShuffleInstruction
 parseShuffleInstruction = makeExprParser terms ops where
@@ -239,11 +150,11 @@ parseShuffleMatch = do
     return $ ShuffleMatch s1 s2 s3
 
 parseShuffleStatements :: Parser [ShuffleStatement]
-parseShuffleStatements = many $ MPL.nonIndented sc $ parseShuffleStatementDef <|> parseShuffleStatementExt
+parseShuffleStatements = (many $ MPL.nonIndented sc $ parseShuffleStatementDef <|> parseShuffleStatementExt) <* eof
 
 parseShuffleStatementDef :: Parser ShuffleStatement
 parseShuffleStatementDef = do
-    name <- parseName
+    name <- parseRelName
     MPL.symbol sc ":"
     instr <- parseShuffleInstruction
     return $ DefineShuffle name instr 
@@ -251,7 +162,7 @@ parseShuffleStatementDef = do
 parseShuffleStatementExt :: Parser ShuffleStatement
 parseShuffleStatementExt = do
     MPL.symbol sc "extend"
-    name <- parseName
+    name <- parseRelName
     MPL.symbol sc "by"
     instr <- parseShuffleInstruction
     return $ ExpandShuffle name instr
@@ -328,11 +239,8 @@ valFromList :: [(Thingy, Thingy)] -> ShuffleValue
 valFromList [] = End
 valFromList (x:xs) = Progress x $ valFromList xs
 
-evalDataLookup :: DataLookup -> [(Thingy, Nteger, Thingy)]
-evalDataLookup = undefined
-
 evalSetSpec :: SetSpec -> [(Thingy, Nteger, Thingy)]
-evalSetSpec = undefined
+evalSetSpec (SetSpec m) = fmap (\(v, n) -> (Global "", n, v)) $ M.toList m
 
 data ShuffleValue'' = ValuePartial [(Thingy, Nteger, Thingy)] (Maybe ShuffleStepIdent)
                     | ValueEval ShuffleEval RandomSeed
@@ -354,13 +262,13 @@ instance Semigroup ShufflesProgress where
 instance Monoid ShufflesProgress where
     mempty = ShufflesProgress mempty mempty
 
-convertShuffles :: RandomSeed -> M.Map ShuffleName (ShuffleInstruction, [ShuffleInstruction]) -> ShufflesProgress
-convertShuffles seed = foldMap (\(name, (main, exts), seed) -> makeProgress (name, False) (Just main) seed <> makeProgress (name, True) (foldr makeUnion Nothing exts) seed) . snd . foldr (\(name, content) (seed, xs) -> let (seed', seed'') = split seed in (seed', (name, content, seed'') : xs)) (seed, []) . M.toList where
+convertShuffles :: LogicData -> RandomSeed -> M.Map ShuffleName (ShuffleInstruction, [ShuffleInstruction]) -> ShufflesProgress
+convertShuffles lData seed = foldMap (\(name, (main, exts), seed) -> makeProgress (name, False) (Just main) seed <> makeProgress (name, True) (foldr makeUnion Nothing exts) seed) . snd . foldr (\(name, content) (seed, xs) -> let (seed', seed'') = split seed in (seed', (name, content, seed'') : xs)) (seed, []) . M.toList where
         makeUnion x Nothing = Just x
         makeUnion x (Just y) = Just (ShuffleUnion x y)
         makeProgress _ Nothing _ = mempty
         makeProgress ident@(name, b) (Just x) seed = ShufflesProgress (M.singleton ident ([(name, b, 0)], 1)) $ M.singleton (name, b, 0) $ ValueEval (convert name x) seed
-        convert _    (ShuffleDataLookup x) = ShuffleEvalConst $ evalDataLookup x
+        convert _    (ShuffleDataLookup x) = ShuffleEvalConst $ evalDataLookup lData x
         convert _    (ShuffleSetSpec x) = ShuffleEvalConst $ evalSetSpec x
         convert _    (ShuffleCountLiteral n) = ShuffleEvalConst [(Global "", n, Global "")]
         convert name ShufflePlaceholder = ShuffleEvalRefer (name, True, 0)
@@ -576,6 +484,9 @@ getNextStep :: ShufflesProgress -> ShuffleName -> Maybe ShuffleStepIdent
 getNextStep progress name = M.lookup (name, False) (progress ^. currentLatest) >>= \case
             ([], _) -> Nothing
             (x:xs, _) -> Just x
+
+associatedShuffle :: ShuffleStepIdent -> ShuffleName
+associatedShuffle = (^. _1)
 
 getAllPartial :: ShufflesProgress -> ShuffleName -> (Bool, Thingy) -> [(Thingy, Nteger)] --note: loops are possible
 getAllPartial prog name condition = M.toList $ fst $ goFrom (name, False, 0) [] where
