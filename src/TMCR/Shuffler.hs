@@ -276,10 +276,10 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
             Just x -> return x
     askShuffle rel x = do
         let (name, condition) = case rel of
-                Forward name -> (name, (True, x))
-                Backward name -> (name, (False, x))
+                Forward name -> (name, MappedTo x)
+                Backward name -> (name, MappedFrom x)
         _2 <>= [ShuffleDependency name]
-        use $ _1 . shuffles . to (\x -> getAllPartial x name condition)
+        use $ _1 . shuffles . to (\x -> getByCondition x name condition)
 
 newtype Lift (t :: (* -> *) -> * -> *) m a = Lift { unLift :: t m a }
         deriving newtype ( Functor

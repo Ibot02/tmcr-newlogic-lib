@@ -7,6 +7,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE GADTs #-}
 module TMCR.Logic.Shuffle where
 
 import TMCR.Logic.Common
@@ -86,10 +87,9 @@ type ShuffleName = Text
 parseShuffleInstruction :: Parser ShuffleInstruction
 parseShuffleInstruction = makeExprParser terms ops where
     terms = parseShuffleDataLookup <|> parseShuffleSetSpec <|> parseShuffleCountLiteral <|> parseShufflePlaceholder <|> parseShuffleCall <|> parseShuffleMatch <|> parseShuffleMap <|> between (MPL.symbol sc "(") (MPL.symbol sc ")") parseShuffleInstruction
-    ops = [ [ prefixReverse ]
-          , [ binUnion ]
+    ops = [ [ binUnion ]
           , [ binThen ]
-          , [ prefixRepeats ]
+          , [ prefixRepeats, prefixReverse ]
           , [ binConnect ]
           ]
     prefixReverse = Prefix $ op "from" ShuffleReverse
@@ -360,10 +360,9 @@ eval (ShuffleEvalMap x y zs) = do
     case (catMaybes $ snd <$> cs) of
         [] -> eval (ShuffleEvalMapPartial [] (Just x) [] (Just y) (foldMap fst cs))
         zs' -> return $ (,) [] $ Just $ ShuffleEvalMap (fmap Left x) (fmap Left y) $ ShuffleEvalConst (foldMap fst cs) : zs'
-eval (ShuffleEvalMapPartial [] Nothing bs y []) = return ([], Nothing)
 eval (ShuffleEvalMapPartial as x bs y cs) = do
-    (r, (as', x', bs', y', cs')) <- evalShuffleMapPartial as x bs y cs
-    return (r, Just $ ShuffleEvalMapPartial as' x' bs' y' cs')
+    (r, x) <- evalShuffleMapPartial as x bs y cs
+    return (r, fmap (\(as', x', bs', y', cs') -> ShuffleEvalMapPartial as' x' bs' y' cs') x)
 eval (ShuffleEvalMatch s'@(SetSpec s) x xs) = do
     (a, e) <- eval x
     let a' = a ^.. traverse . filtered (\(ax,_,_) -> M.member ax s) . _3
@@ -387,29 +386,28 @@ evalShuffleMapPartial :: (MonadState
     -> Maybe (ShuffleEval' ShuffleStepIdent)
     -> [a1]
     -> m ([(Thingy, Nteger, Thingy)],
-      ([[(Thingy, Nteger, Thingy)]],
+      Maybe ([[(Thingy, Nteger, Thingy)]],
        Maybe (ShuffleEval' (Either ShuffleStepIdent Int)),
        [[(Thingy, Nteger, Thingy)]],
        Maybe (ShuffleEval' (Either ShuffleStepIdent Int)), [a2]))
 evalShuffleMapPartial [] (Just x) bs y [] = do
     (a, e) <- eval x
-    return ([], ([a],e,bs,(fmap (fmap Left) y),[]))
+    return ([], Just ([a],e,bs,(fmap (fmap Left) y),[]))
+evalShuffleMapPartial [] Nothing _ _ [] = return ([], Nothing)
+evalShuffleMapPartial ([]:as) x bs y cs = evalShuffleMapPartial as x bs y cs                                                
+evalShuffleMapPartial as x ([]:bs) y cs = evalShuffleMapPartial as x bs y cs                                                
 evalShuffleMapPartial (a:as) x [] Nothing [] = error "map failed" --todo
-evalShuffleMapPartial (a:as) x [] (Just y) [] = do
+evalShuffleMapPartial as x [] (Just y) [] = do
                                                 (b, e) <- eval y
-                                                return ([], (as,(fmap (fmap Left) x),([b]),e,[]))
+                                                return ([], pure (as,(fmap (fmap Left) x),([b]),e,[]))
 evalShuffleMapPartial as@(a:as') x (b:bs) y [] = case [(a',n,x) | (a',n,x) <- a, (x', _, _) <- b, x == x'] of
                                                         [] -> do
-                                                            (r,(as',x',bs',y',cs')) <- evalShuffleMapPartial as x bs y []
-                                                            return (r, (as', x', b:bs', y', cs'))
+                                                            (r,x) <- evalShuffleMapPartial as x bs y []
+                                                            return (r, fmap (\(as',x',bs',y',cs') -> (as', x', b:bs', y', cs')) x)
                                                         _ -> do
                                                             (r, a', b') <- chooseRandomMatching a b
-                                                            return (r, (consNonempty a' as', fmap (fmap Left) x, consNonempty b' bs, fmap (fmap Left) y, []))
+                                                            return (r, pure (a':as', fmap (fmap Left) x, b':bs, fmap (fmap Left) y, []))
 evalShuffleMapPartial _ _ _ _ (c:cs) = error "constraints not yet implemented" --todo
-
-consNonempty :: [a] -> [[a]] -> [[a]]
-consNonempty [] xs = xs
-consNonempty x xs = x:xs
 
 chooseRandomMatching as bs = do
     rand <- use _1
@@ -421,14 +419,18 @@ chooseRandomMatching as bs = do
                 ) (
                     MM.traverseMaybeMissing $ \c bs -> _3 <>= [(c,n,b) | (n,b) <- bs] >> pure Nothing
                 ) (
-                    MM.zipWithMatched $ \c as bs -> let go [] r = r; go ((Finite n, a):as) (i,x) = go as (i,replicate n a <> x); go ((Infinite, a):as) (i,x) = (a:i,x) in (go ((\(x,y) -> (y,x)) <$> as) ([],[]), go bs ([],[]))
+                    MM.zipWithMatched $ \c as bs -> let
+                        go [] r = r
+                        go ((Finite n, a):as) (i,x) = go as (i,replicate n a <> x)
+                        go ((Infinite, a):as) (i,x) = (a:i,x)
+                      in (go ((\(x,y) -> (y,x)) <$> as) ([],[]), go bs ([],[]))
                 ) cas cbs
             fmap concat $ for (M.toList matches) $ \case
                 (c,(([],as), ([], bs))) -> do
                     as' <- zoom _1 $ randomOrder as
                     bs' <- zoom _1 $ randomOrder bs
                     _2 <>= [(a, Finite 1, c) | a <- drop (length bs') as']
-                    _3 <>= [(b, Finite 1, c) | b <- drop (length as') bs']
+                    _3 <>= [(c, Finite 1, b) | b <- drop (length as') bs']
                     return $ zipWith (\a b -> (a, Finite 1, b)) as' bs'
                 (c,(([],as), (infB, bs))) -> do
                     _3 <>= [(c,Finite 1,b) | b <- bs]
@@ -488,8 +490,10 @@ getNextStep progress name = M.lookup (name, False) (progress ^. currentLatest) >
 associatedShuffle :: ShuffleStepIdent -> ShuffleName
 associatedShuffle = (^. _1)
 
-getAllPartial :: ShufflesProgress -> ShuffleName -> (Bool, Thingy) -> [(Thingy, Nteger)] --note: loops are possible
-getAllPartial prog name condition = M.toList $ fst $ goFrom (name, False, 0) [] where
+
+getByCondition :: (Ord k) => ShufflesProgress -> ShuffleName -> Condition k -> [(k,Nteger)]
+getByCondition prog name condition = M.toList $ fst $ goFrom (name, False, 0) [] where
+    --goFrom :: ShuffleStepIdent -> [ShuffleStepIdent] -> (M.Map k Nteger, Maybe ShuffleStepIdent)
     goFrom ident idents | ident `elem` idents = (mempty, Just ident)
                         | otherwise = case M.lookup ident (prog ^. current) of
                             Nothing -> (mempty, Nothing)
@@ -501,9 +505,20 @@ getAllPartial prog name condition = M.toList $ fst $ goFrom (name, False, 0) [] 
                                     res = foldr (f condition) m vals
                                     (res', x'') = if x' == Just ident then (fmap (const Infinite) res, Nothing) else (res, x')
                                     in (res', x'')
-    f (b, x) (y, n, z) | b && x == y = M.unionWith addNteger (M.singleton z n)
-                       | not b && x == z = M.unionWith addNteger (M.singleton y n)
-                       | otherwise = id
+    f :: Condition k -> (Thingy, Nteger, Thingy) -> M.Map k Nteger -> M.Map k Nteger
+    f (MappedTo x) (y,n,z) | z == x = M.unionWith addNteger (M.singleton y n)
+                           | otherwise = id
+    f (MappedFrom x) (y,n,z) | y == x = M.unionWith addNteger (M.singleton z n)
+                             | otherwise = id
+    f All (y,n,z) = M.unionWith addNteger (M.singleton (y,z) n)
+
+data Condition k where
+    MappedTo :: Thingy -> Condition Thingy
+    MappedFrom :: Thingy -> Condition Thingy
+    All :: Condition (Thingy, Thingy)
+
+getPartial :: ShufflesProgress -> ShuffleName -> [(Thingy, Nteger, Thingy)]
+getPartial prog name = fmap (\((a,b),n) -> (a,n,b)) $ getByCondition prog name All
 
 addNteger :: Nteger -> Nteger -> Nteger
 addNteger (Finite n) (Finite m) = Finite (n + m)

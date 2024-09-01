@@ -5,5 +5,4 @@ area Spawn:
             set "vTest"
             countyTarget
         node Extra1
-        Spawn -> Extra1:
-            flag "vTest"
+        Spawn -> Extra1: ( flag "vTest" | flag Other )

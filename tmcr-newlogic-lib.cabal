@@ -76,3 +76,4 @@ Test-Suite tests
     , polysemy
     , text
     , tmcr-newlogic-lib
+    , megaparsec
