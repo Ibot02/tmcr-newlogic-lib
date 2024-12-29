@@ -106,7 +106,7 @@ listDirectory :: (Member WithDirectory r) => Sem r [(String, Bool)]
 listDirectory = asks (^.. to getDirectory . to M.toList . traverse . to (_2 %~ isRight))
 withFile :: (Member WithDirectory r) => String -> Sem r [(FilePath, ByteString)]
 withFile name = asks $ catMaybes . (^.. to getDirectory . to M.toList . traverse . to (\case
-                    (path, Left content) | name `matches` path -> Just (name, content)
+                    (path, Left content) | name `matches` path -> Just (path, content)
                     _ -> Nothing))
 #endif
 
@@ -402,7 +402,7 @@ withPath path c = withPath' "" path c where
         "" -> withFile' "" (\path' -> c $ context <> path')
         path' -> if any isDelim path' then
                 let (d,path'') = break isDelim path' in
-                concat <$> inSubdir' d (\dir' -> withPath' (context <> dir') path'' c)
+                concat <$> inSubdir' d (\dir' -> withPath' (context <> dir' <> "/") path'' c)
             else
                 withFile' path' (\path'' -> c $ context <> path'')
 

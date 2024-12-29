@@ -494,9 +494,11 @@ transformLogic :: forall m. (MonadMerge m) => Map DescriptorName DescriptorDecla
 transformLogic descriptors forest = errorContext "transformLogic" $ g <$> traverse f forest where
     g = (foldr (\(g, m) (g', m') -> (g <> g', M.unionWith (<>) m m')) (mempty, mempty))
     f :: Tree' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
-    f (Node (L.NamedScoping _ _) forest) = g <$> traverse f forest
-    f (Node (L.NamedScoped "node" logicNodeName) forest) = g <$> traverse (nodeDescr logicNodeName) forest
-    f (Node (L.Edge source target) desc) = ((,)) . (\e -> taggedEdge (Join e) (Just source) (Just target)) <$> ((getMeet . foldMap Meet) <$> traverse descrRule desc) <*> pure M.empty
+    f (Node (L.NamedScoping x y) forest) = errorContext (x <> T.pack (show y)) $ g <$> traverse f forest
+    f (Node (L.NamedScoped "node" logicNodeName) forest) = errorContext (T.pack $ "node " <> show logicNodeName) $ g <$> traverse (nodeDescr logicNodeName) forest
+    f (Node (L.Edge source target) desc) = errorContext (T.pack $ show source <> " -> " <> show target) $ ((,)) . (\e -> taggedEdge (Join e) (Just source) (Just target)) <$> ((getMeet . foldMap Meet) <$> traverse descrRule desc) <*> pure M.empty
+    f (Node (L.NamedScoped other logicNodeName) forest) = errorContext ("expected node but got " <> T.pack (show other)) $ errorGenericMergeError 8
+    f other = errorContext (T.pack $ show other) $ errorUnexpectedLogicStructure
     --f (Node (L.EdgeUndirected source target) desc) = ((,)) . (\e -> taggedEdge e (Just source) (Just target) <> taggedEdge e (Just target) (Just source)) <$> ((getJoin . foldMap Join) <$> traverse descrRule desc) <*> pure M.empty --cleared out in mergeLogic
     nodeDescr :: L.LogicNodeName -> Tree' L.Value -> m (TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe L.LogicNodeName), Map L.LogicNodeName [(DescriptorName, [Thingy])])
     nodeDescr name (Node (L.Anon descr) xs) = case M.lookup descr descriptors of
