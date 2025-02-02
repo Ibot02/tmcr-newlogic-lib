@@ -110,11 +110,13 @@ withFile name = asks $ catMaybes . (^.. to getDirectory . to M.toList . traverse
                     _ -> Nothing))
 #endif
 
+deriving instance (Eq a) => Eq (DirectoryF a)
 instance Eq1 DirectoryF where
     liftEq e (DirectoryF a) (DirectoryF b) = liftEq e' a b where
         e' (Left x) (Left y) = x == y
         e' (Right x) (Right y) = e x y
         e' _ _ = False
+deriving instance (Ord a) => Ord (DirectoryF a)
 instance Ord1 DirectoryF where
     liftCompare e (DirectoryF a) (DirectoryF b) = liftCompare e' a b where
         e' (Left x) (Left y) = compare x y

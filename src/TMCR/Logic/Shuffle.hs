@@ -33,6 +33,7 @@ import Data.Functor.Foldable.TH
 
 import System.Random
 
+import Control.Monad
 import Control.Lens
 import Control.Lens.TH
 import Control.Monad.Reader (MonadReader, runReader)
