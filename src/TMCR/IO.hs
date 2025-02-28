@@ -49,7 +49,7 @@ import qualified Data.Text.Encoding as TE
 import TMCR.Logic.Logic
     ( logicParser, Sugar, Scopes, _ModeAppend )
 import TMCR.Logic.Data (LogicData')
-import TMCR.Logic.Shuffle (parseShuffleInstruction, parseShuffleStatements)
+import TMCR.Logic.Shuffle (parseShuffleInstruction, parseShuffleStatements, RandomSeed())
 import Data.Aeson (decode)
 #ifdef MIN_VERSION_yaml
 import Data.Yaml (decodeEither, ParseException, decodeEither')
@@ -63,6 +63,8 @@ import qualified Control.Monad.State as S
 import Data.Functor.Foldable.TH
 import Data.Functor.Classes
 import Data.Either (isRight)
+
+import System.Random (initStdGen)
 
 #ifndef MIN_VERSION_yaml
 type ParseException = String
@@ -431,6 +433,9 @@ startsWith :: (Eq a) => [a] -> [a] -> Bool
 startsWith _ [] = True
 startsWith (x:xs) (y:ys) = x == y && xs `startsWith` ys
 startsWith _ _ = False
+
+randomSeed :: IO RandomSeed
+randomSeed = initStdGen
 
 {-
 readModule :: WithDirectoryT (Maybe Module)

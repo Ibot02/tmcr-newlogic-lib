@@ -1,6 +1,7 @@
 {-# Language OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE DeriveGeneric #-}
 module TMCR.Logic.Common where
 
 import Text.Megaparsec as MP
@@ -19,6 +20,8 @@ import Polysemy
 import qualified Polysemy.Reader as PR
 import Polysemy.Error
 import Control.Monad.Identity
+import GHC.Generics (Generic)
+import Data.Hashable (Hashable)
 
 --type ParserC c = ParsecT Void Text (Reader c)
 type ParserC c = ParserCT c Identity
@@ -47,7 +50,9 @@ type Name = Text
 
 data PossiblyScopedName = Global Text
                         | ScopedName [Text]
-                deriving (Eq, Ord, Show)
+                deriving (Eq, Ord, Show, Generic)
+
+instance Hashable PossiblyScopedName where
 
 parsePossiblyScopedName :: ParserCT c m PossiblyScopedName
 parsePossiblyScopedName = MPL.lexeme sc parsePossiblyScopedName'

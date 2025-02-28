@@ -27,6 +27,7 @@ library
       TMCR.Module.Dependency
       TMCR.IO
       TMCR.Shuffler
+      TMCR.Exec
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:
@@ -49,6 +50,10 @@ library
     , polysemy
     , algebraic-graphs
     , free
+    , stm
+    , ttrie
+    , hashable
+    , async
     , random
   if !impl(ghcjs)
     build-depends:
@@ -77,3 +82,4 @@ Test-Suite tests
     , text
     , tmcr-newlogic-lib
     , megaparsec
+    , algebraic-graphs

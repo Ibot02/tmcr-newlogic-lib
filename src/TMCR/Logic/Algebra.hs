@@ -10,6 +10,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), StatefulLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF) where
 
+import Data.Kind (Type)
 
 import TMCR.Logic.Descriptor
 import TMCR.Logic.Common
@@ -161,7 +162,7 @@ instance (Lattice t) => LogicValues t (Count t) where
     atLeast (Finite n) (CountyValue (_:as) x) = atLeast (Finite $ n-1) (CountyValue as x)
     cast x = CountyValue [x] bottom
 
-data LogicValue t :: DescriptorType -> * where
+data LogicValue t :: DescriptorType -> Type where
     LogicTruthyValue :: t -> LogicValue t Truthy
     LogicCountyValue :: (Count t) -> LogicValue t County
 

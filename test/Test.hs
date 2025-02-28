@@ -21,16 +21,24 @@ import qualified Polysemy as PS
 import qualified Polysemy.Error as PS
 import qualified Polysemy.Reader as PS
 
-import TMCR.Logic.Logic (Scopes(..), logicParser, Sugar(..))
+import TMCR.Logic.Logic (Scopes(..), logicParser, Sugar(..), LogicNodeName)
 import TMCR.Logic.Merge (GameDef(..))
 import TMCR.Logic.Common
 
 import Data.Text (Text(), unpack)
 import Data.Either (isRight)
 import Data.Maybe (isJust)
+import qualified Data.Set as Set
+import qualified Data.Map as Map
+import Data.Map (Map())
 
 import Data.Void
 import qualified Text.Megaparsec as MP
+import TMCR.Logic.Graphs (TaggedGraph)
+import TMCR.Logic.Algebra (DNF(..), Join (..))
+
+import Algebra.Graph.Labelled as Labelled
+import Control.Arrow ((***))
 
 testModule1 = Module "test" (Version [1,0]) (Version [0,1]) [] [] $ ModuleContent (M.singleton "test" (DescriptorDeclaration Nothing (Just True) [Scoped] Truthy)) M.empty [] [] [] [] []
 testModule1Enc :: BS.ByteString
@@ -87,17 +95,23 @@ main = hspec $ do
             let logic2 = PS.run $ PS.runError @(MP.ParseErrorBundle Text Void) $ PS.runReader [SugarOpList "or" "|"] $ runParserC (logicParser (Scopes ["area", "room"])) "test" "area Test:\n room Test:\n  A -> B:\n   or:\n    flag A\n    flag B"
             logic `shouldBe` logic2
     -- describe "Module Export" $ do
-        -- it "" $ do
-        --     dir <- TIO.readDirectoryFull "modules"
-        --     dir `shouldBe` Directory {getDirectory = M.fromList [("basicDefinitions",Right (Directory {getDirectory = M.fromList [("descriptors.dscr",Left "flag vName:\n    [set vName].\n\nspawn: true.\n\ntarget vName:\n    [warp vName]."),("module.yaml",Left "name: basicDefinitions\nversion: '1.0'\nsyntax-version: '0.1'\ndependencies: []\nsoft-dependency: []\nprovides:\n  descriptors:\n    flag:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: edge\n    set:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: target\n    target:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: edge-from-beyond-the-void\n    warp:\n      arguments:\n        - unscoped\n      stateful: false\n      type: truthy\n      export: target\n    item:\n      arguments:\n        - unscoped\n      stateful: false\n      type: truthy\n      export: edge\n    chest:\n      arguments:\n        - unscoped\n      stateful: false\n      type: truthy\n      export: target\n    kill:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: edge\n    enemy:\n      arguments:\n        - unscoped\n      stateful: false\n      type: truthy\n      export: target\n    trick:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: edge\n    spawn:\n      arguments: []\n      stateful: false\n      type: truthy\n      export: edge-from-beyond-the-void\n  logic-sugar:\n    door:\n      type: multi\n      expands-to:\n        - warp\n        - target\n    \"|\":\n      type: operator\n      replacement: or\n    \"||\":\n      type: operator\n      replacement: or\n    \"&\":\n      type: operator\n      replacement: and\n    \"&&\":\n      type: operator\n      replacement: and\n  descriptor-definitions:\n    - descriptors.dscr\n  shuffles:\n    - shuffles.shuff\n  logic: []\n  data: []\n  patches: []\n")]})),("tmc",Right (Directory {getDirectory = M.fromList [("descriptors.dscr",Left "trick Town.Main.GuardEastwards: ool.\ntrick Town.Main.GuardBootSkip: ool.\ntrick VeilFalls.Main.HPCapeJump: ool.\n\nitem CanSpin:\n  item Sword,\n  item SpinAttack.\n"),("logic",Right (Directory {getDirectory = M.fromList [("scratch.logic",Left "")]})),("module.yaml",Left "name: tmc\nversion: '1.0'\nsyntax-version: '0.1'\ndependencies:\n  - [basicDefinitions, \">= 1.0, < 2.0\"]\nsoft-dependency: []\nprovides:\n  descriptors:\n    npc:\n      arguments:\n        - scoped\n      stateful: false\n      type: truthy\n      export: target\n  logic-sugar:\n    entrance:\n      type: multi\n      expands-to:\n        - warp\n    exit:\n      type: multi\n      expands-to:\n        - target\n  descriptor-definitions:\n    - descriptors.dscr\n  logic:\n    - \"logic/*.logic\"\n  shuffles:\n    - \"shuffles/*.shuf\"\n  data:\n    - \"logic/*.json\"\n  patches: []\n"),("shuffles",Right (Directory {getDirectory = M.fromList [("scratch.shuf",Left "")]}))]})),("tmcr",Right (Directory {getDirectory = M.fromList [("descriptors.dscr",Left "item CanGrow: true.\nitem CanTurnMinish: true.\n"),("module.yaml",Left "name: tmcr\nversion: '1.0'\nsyntax-version: '0.1'\ndependencies:\n  - [basicDefinitions, \">= 1.0, < 2.0\"]\n  - [tmc, \">= 1.0, < 2.0\"]\nsoft-dependency: []\nprovides:\n  descriptors: {}\n  logic-sugar: {}\n  descriptor-definitions:\n    - descriptors.dscr\n  logic:\n    - \"logic/*.logic\"\n  shuffles: []\n  data:\n    - \"logic/*.json\"\n  patches: []")]}))]}
+    --     it "" $ do
+    --         dir <- TIO.readDirectoryFull "actual_modules"
+    --         --dir `shouldBe` Directory mempty
     --         let compile :: Directory -> (Maybe GameDef, Text)
     --             compile dir = either (\x -> (Nothing, x)) (\y -> (Just y, "OK")) $ either (const (Left "Directory Error")) id $ PS.run $ PS.runError @TIO.DirectoryErrorWithContext $ PS.runReader @Scopes (Scopes ["area", "room"]) $ PS.runError @Text $ TIO.runInMemoryDir dir $ TIO.readGameDefStrErr (modules dir) where
     --                 modules (Directory m) = M.keys m --todo search for module.yaml
     --         let (res, msg) = compile dir
     --         putStrLn $ unpack msg
-    --         -- isJust res `shouldBe` True
-    --         -- _defLogic <$> res `shouldBe` Nothing
+    --         isJust res `shouldBe` True
+    --         --((getTargets *** getWarps) . _defLogic) <$> res `shouldBe` Just ([],[])
+    --      -- _defLogic <$> res `shouldBe` Nothing
 
+
+getTargets :: TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe LogicNodeName) -> [Thingy]
+getTargets = Set.toList . Set.unions . Set.map (\(e, _, _) -> Set.unions $ Set.map (Set.map (\(_, [x]) -> x) . Set.filter (\(d, args) -> d == "target" && length args == 1)) $ getDisjunctions $ getJoin e) . Labelled.edgeSet
+getWarps :: Map LogicNodeName [(DescriptorName, [Thingy])] -> [Thingy]
+getWarps = Set.toList . foldMap (\xs -> Set.fromList [x | ("warp", [x]) <- xs])
 
 instance Arbitrary Version where
     arbitrary = fmap (Version . fmap abs) $ (:) <$> arbitrary <*> arbitrary

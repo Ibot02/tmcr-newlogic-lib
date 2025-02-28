@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveGeneric #-}
 module TMCR.Logic.Logic where
 
 import Text.Megaparsec
@@ -19,9 +20,12 @@ import Control.Lens.TH
 
 import Data.Char (isSeparator)
 
+import Data.Hashable (Hashable)
+
 import Data.Void
 import Data.Text (Text())
 import qualified Data.Text as T
+import GHC.Generics (Generic)
 
 data Sugar = SugarOpList Text Text
            | SugarMulti [Text] Text
@@ -30,7 +34,9 @@ data Sugar = SugarOpList Text Text
 data Name = PlainName Text
           | QuotedName Text
           | Wildcard
-          deriving (Eq, Ord, Show)
+          deriving (Eq, Ord, Show, Generic)
+
+instance Hashable Name where
 
 type ScopeName = Text
 
@@ -45,7 +51,9 @@ type LogicNodeName = ScopedName
 data ScopedName = Global Name
                 | Scoped [Name]
                 | FullWildcard
-                deriving (Eq, Ord, Show)
+                deriving (Eq, Ord, Show, Generic)
+
+instance Hashable ScopedName where
 
 data Mode = ModeDefault --select or new
           | ModeAppend

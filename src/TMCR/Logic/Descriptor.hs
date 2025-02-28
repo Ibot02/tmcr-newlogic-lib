@@ -10,6 +10,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances #-}
 module TMCR.Logic.Descriptor where
 
 import TMCR.Logic.Common
@@ -53,7 +55,11 @@ import Data.GADT.Compare
 import Data.Aeson (camelTo2, defaultOptions, Options(..))
 import Data.Aeson.TH
 
+import Data.Kind (Type)
+
 import qualified Control.Monad.State as S
+
+import Data.Hashable (Hashable(..))
 
 data DescriptorDeclaration = DescriptorDeclaration {
       _descriptorDeclarationExport :: Maybe DescriptorExport
@@ -98,6 +104,10 @@ data DescriptorIdent t where
 
 deriving instance Show (DescriptorIdent a)
 
+instance Hashable (DescriptorIdent a) where
+    hashWithSalt n (TruthyDescriptorIdent a) = hashWithSalt n a
+    hashWithSalt n (CountyDescriptorIdent a) = hashWithSalt n a
+
 instance GEq DescriptorIdent where
     TruthyDescriptorIdent _ `geq` TruthyDescriptorIdent _ = Just Refl
     CountyDescriptorIdent _ `geq` CountyDescriptorIdent _ = Just Refl
@@ -130,7 +140,7 @@ deriving instance Eq (Descriptor t)
 deriving instance Ord (Descriptor t)
 type ConsumeUUID = Int
 
-data SDescriptorType :: DescriptorType -> * where
+data SDescriptorType :: DescriptorType -> Type where
     STruthy :: SDescriptorType Truthy
     SCounty :: SDescriptorType County
 
