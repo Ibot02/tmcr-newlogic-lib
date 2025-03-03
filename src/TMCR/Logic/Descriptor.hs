@@ -59,6 +59,7 @@ import Data.Kind (Type)
 
 import qualified Control.Monad.State as S
 
+import GHC.Generics (Generic)
 import Data.Hashable (Hashable(..))
 
 data DescriptorDeclaration = DescriptorDeclaration {
@@ -192,7 +193,11 @@ data StateBody v = IsSet v
 
 data Relation = Forward RelName
               | Backward RelName
-                deriving (Eq, Ord, Show)
+                deriving (Eq, Ord, Show, Generic)
+instance Hashable Relation
+relationName :: Relation -> RelName
+relationName (Forward rel) = rel
+relationName (Backward rel) = rel
 
 data DescriptorRole = DefaultRole | Reachability deriving (Eq, Ord, Show, Enum, Bounded)
 

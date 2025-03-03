@@ -86,8 +86,11 @@ data ShuffleProgress t c = ShuffleProgress {
     , _cachedDependencies :: Bipartite ShuffleDependency ShuffleDependent
     } deriving (Eq, Show)
 
+initialShufflesProgress :: GameDef -> RandomSeed -> ShufflesProgress
+initialShufflesProgress def seed = (def ^. defShuffles . to (convertShuffles (def ^. defLogicData) seed) )
+
 initialShuffleProgress :: GameDef -> RandomSeed -> ShuffleProgress t c
-initialShuffleProgress def seed = ShuffleProgress (def ^. defShuffles . to (convertShuffles (def ^. defLogicData) seed)) M.empty M.empty M.empty (computeAccess def) mempty
+initialShuffleProgress def seed = ShuffleProgress (initialShufflesProgress def seed) M.empty M.empty M.empty (computeAccess def) mempty
 
 computeAccess :: GameDef -> Map (DescriptorName, [Thingy]) (Set LogicNodeName)
 computeAccess def = def ^. defLogic . _2 . to M.toList . to (\xs -> [(d, S.singleton n) | (n, ds) <- xs, d <- ds]) . to (M.fromListWith (<>))
@@ -107,9 +110,24 @@ data ShuffleDependency =
     | LogicNodeDependency LogicNodeName
     deriving (Eq, Ord, Show)
 
+data ShuffleDependencyWithValue v where
+      DescriptorDependencyWithValue :: (DescriptorIdent t, [Thingy]) -> v t -> ShuffleDependencyWithValue v
+      ShuffleDependencyWithValue :: Relation -> Thingy -> [(Thingy, Nteger)] -> ShuffleDependencyWithValue v
+      AccessDependencyWithValue :: SDescriptorType t -> (DescriptorIdent t, [Thingy]) -> v t -> ShuffleDependencyWithValue v
+      LogicNodeDependencyWithValue :: LogicNodeName -> v Truthy -> ShuffleDependencyWithValue v
+
+forgetValue :: ShuffleDependencyWithValue v -> ShuffleDependency
+forgetValue (DescriptorDependencyWithValue (TruthyDescriptorIdent name, params) _) = DescriptorDependency (name, params)
+forgetValue (DescriptorDependencyWithValue (CountyDescriptorIdent name, params) _) = DescriptorDependency (name, params)
+forgetValue (ShuffleDependencyWithValue rel x _) = ShuffleDependency rel x
+forgetValue (AccessDependencyWithValue STruthy (TruthyDescriptorIdent name, params) _) = AccessDependency Truthy (name, params)
+forgetValue (AccessDependencyWithValue SCounty (CountyDescriptorIdent name, params) _) = AccessDependency County (name, params)
+forgetValue (LogicNodeDependencyWithValue name _) = LogicNodeDependency name
+
 $(makeLenses ''ShuffleProgress)
 
 class (Monad m) => MonadEval t c m | m -> t c where
+    askDefinitions :: m Definitions
     askTruthyDescriptor :: DescriptorIdent Truthy -> [Thingy] -> m t
     askCountyDescriptor :: DescriptorIdent County -> [Thingy] -> m c
     askAccessTruthy :: DescriptorName -> [Thingy] -> m t
@@ -141,12 +159,13 @@ data Definitions = Definitions {
                    , _descriptorDeclarations :: Map DescriptorName DescriptorDeclaration
                    , _truthyDescriptorDefinitions :: Map (DescriptorIdent Truthy) [Descriptor Truthy]
                    , _countyDescriptorDefinitions :: Map (DescriptorIdent County) [Descriptor County]
-                   }
+                   , _definedShuffles :: Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
+                   } deriving (Eq, Ord, Show)
 
 $(makeLenses ''Definitions)
 
 getDefinitions :: GameDef -> Definitions
-getDefinitions def = Definitions (def ^. defLogic . _1) (def ^. defLogic . _2) (def ^. defDescriptors) (def ^. defDescriptorDefinitionsTruthy) (def ^. defDescriptorDefinitionsCounty)
+getDefinitions def = Definitions (def ^. defLogic . _1) (def ^. defLogic . _2) (def ^. defDescriptors) (def ^. defDescriptorDefinitionsTruthy) (def ^. defDescriptorDefinitionsCounty) (def ^. defShuffles)
 
 --definedEdgesTo :: LogicNodeName -> Traversal' Definitions [(LogicNodeName, Descriptor Truthy)]
 definedEdgesTo name = definedEdges . to (taggedGetEdgesTo name)
@@ -162,14 +181,17 @@ definedDescriptor :: DescriptorIdent t -> Traversal' Definitions [Descriptor t]
 definedDescriptor name@(TruthyDescriptorIdent _) = truthyDescriptorDefinitions . ix name
 definedDescriptor name@(CountyDescriptorIdent _) = countyDescriptorDefinitions . ix name
 
-updateLocal :: (Eq (v Truthy), Eq (v County), Lattice (v Truthy), Lattice (v County), LogicValues (v Truthy) (v County)) => Definitions -> (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> ShuffleDependent -> ShuffleProgress (v Truthy) (v County) -> ([Update v], Set ShuffleDependency)
-updateLocal defs eval object progress = runUpdate defs progress $ case object of
-    -- DescriptorDependent (i@(TruthyDescriptorIdent name), params) -> evalMax eval STruthy $ fmap (goT . applyParams params) $ lookupDescriptors i defs
-    -- DescriptorDependent (i@(CountyDescriptorIdent name), params) -> evalMax eval SCounty $ fmap (goC . applyParams params) $ lookupDescriptors i defs
+
+updateLocal :: (Eq (v Truthy), Eq (v County), Lattice (v Truthy), Lattice (v County), LogicValues (v Truthy) (v County)) => Definitions -> (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> ShuffleDependent -> ShuffleProgress (v Truthy) (v County) -> ([Update v], [ShuffleDependencyWithValue v])
+updateLocal defs eval object progress = runUpdate defs progress $ updateLocal' eval object
+
+updateLocal' :: (MonadEval (v Truthy) (v County) m, LogicValues (v Truthy) (v County), Eq (v Truthy), Eq (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> ShuffleDependent -> UpdateT v m ()
+updateLocal' eval object = case object of
     LogicNodeDependent name -> do
         updateLogicNode eval name
     DescriptorDependent (name, params) -> do
-        descType <- asks (^?! updateContextDefinitions . definedDescriptorType name)
+        defs <- askDefinitions
+        let descType = defs ^?! definedDescriptorType name
         -- spec <- asks (^? definedDescriptorConsumesSpec name)
         case descType of
             Truthy -> do
@@ -195,38 +217,38 @@ updateLocal defs eval object progress = runUpdate defs progress $ case object of
 
 type UpdateContext v = (Definitions, ShuffleProgress (v Truthy) (v County))
 
-newtype UpdateT v m a = UpdateT { extractUpdate :: ReaderT (UpdateContext v) (WriterT ([Update v], Set ShuffleDependency) m) a }
-                      deriving newtype ( MonadReader (UpdateContext v) )
-                      deriving newtype ( MonadWriter ([Update v], Set ShuffleDependency))
+newtype UpdateT v m a = UpdateT { extractUpdate :: WriterT ([Update v], [ShuffleDependencyWithValue v]) m a }
+                      deriving newtype ( MonadWriter ([Update v], [ShuffleDependencyWithValue v]))
                       deriving newtype Functor
                       deriving newtype Applicative
                       deriving newtype Monad
 
 updateContextDefinitions :: Getter (UpdateContext v) Definitions
 updateContextDefinitions = _1
-updateContextProgress :: Getter (UpdateContext v) (ShuffleProgress (v Truthy) (v County))
-updateContextProgress = _2
 tellUpdate u = (u, mempty)
 tellDependency d = (mempty, d)
 
-data Update v = UpdateDependency (Set ShuffleDependency) ShuffleDependent
+data Update v = UpdateDependency [ShuffleDependencyWithValue v] ShuffleDependent
               | UpdateLogicNode LogicNodeName (v Truthy)
               | UpdateTruthyDescriptor (DescriptorName, [Thingy]) (v Truthy)
               | UpdateCountyDescriptor (DescriptorName, [Thingy]) (v County)
 
-runUpdateT :: (Eq (v Truthy), Eq (v County), Monad m) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v m () -> m ([Update v], Set ShuffleDependency)
-runUpdateT defs progress action = execWriterT $ runReaderT (extractUpdate action) (defs, progress)
+runUpdateT :: (Eq (v Truthy), Eq (v County), Monad m) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v (ReadEval v m) () -> m ([Update v], [ShuffleDependencyWithValue v])
+runUpdateT defs progress action = runReaderT (runReadEval $ execWriterT $ extractUpdate action) (defs, progress)
 
-runUpdate :: (Eq (v Truthy), Eq (v County)) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v Identity () -> ([Update v], Set ShuffleDependency)
+runUpdate :: (Eq (v Truthy), Eq (v County)) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v (ReadEval v Identity) () -> ([Update v], [ShuffleDependencyWithValue v])
 runUpdate defs progress = runIdentity . runUpdateT defs progress
 
 -- runUpdate :: (Eq (v Truthy), Eq (v County)) => Definitions -> ShuffleProgress (v Truthy) (v County) -> UpdateT v Identity () -> (ShuffleProgress (v Truthy) (v County), [ShuffleDependent])
 -- runUpdate defs progress update = _1 %~ fst $ runIdentity $ execRWST (extractUpdate update) defs (progress, [])
 
-updateLogicNode :: (Monad m, Eq (v Truthy), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> LogicNodeName -> UpdateT v m ()
+--viewDefinitions :: (MonadEval (v Truthy) (v County) m) => Getter Definitions a -> m a
+viewDefinitions g = fmap (^. g) askDefinitions
+
+updateLogicNode :: (MonadEval (v Truthy) (v County) m, Eq (v Truthy), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> LogicNodeName -> UpdateT v m ()
 updateLogicNode eval name = do
         (t, (_, deps)) <- listen $ do
-          incomingEdges <- view $ updateContextDefinitions . definedEdgesTo (Just name)
+          incomingEdges <- viewDefinitions $ definedEdgesTo (Just name)
           ts <- forM incomingEdges $ \(source, edge) -> do
             t <- case source of
                 Just source -> askLogicNodeAccess source
@@ -238,56 +260,67 @@ updateLogicNode eval name = do
           return $ getJoin $ foldMap Join ts
         updateLogicNode' name deps t
 
-updateLogicNode' :: (Monad m, Eq (v Truthy)) => LogicNodeName -> Set ShuffleDependency -> v Truthy -> UpdateT v m ()
+updateLogicNode' :: (Monad m, Eq (v Truthy)) => LogicNodeName -> [ShuffleDependencyWithValue v] -> v Truthy -> UpdateT v m ()
 updateLogicNode' name deps value = tell $ tellUpdate $ [UpdateLogicNode name value, UpdateDependency deps (LogicNodeDependent name)]
 
-updateCountyDescriptor :: (Monad m, Eq (v County), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> (DescriptorName, [Thingy]) -> UpdateT v m ()
+updateCountyDescriptor :: (MonadEval (v Truthy) (v County) m, Eq (v County), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> (DescriptorName, [Thingy]) -> UpdateT v m ()
 updateCountyDescriptor eval (name, params) = do
     (t, (_, deps)) <- listen $ do
-                ds <- view $ updateContextDefinitions . definedDescriptor (CountyDescriptorIdent name)
+                ds <- viewDefinitions $ definedDescriptor (CountyDescriptorIdent name)
                 ts <- forM ds $ \d ->
                     evalDescriptor eval SCounty name d params
                 return $  getJoin $ foldMap Join ts
     updateCountyDescriptor' (name, params) t deps
 
-updateCountyDescriptor' :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy]) -> v County -> Set ShuffleDependency -> UpdateT v m ()
+updateCountyDescriptor' :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy]) -> v County -> [ShuffleDependencyWithValue v] -> UpdateT v m ()
 updateCountyDescriptor' desc value deps = tell $ tellUpdate [UpdateCountyDescriptor desc value, UpdateDependency deps $ DescriptorDependent desc]
 
-updateTruthyDescriptor :: (Monad m, Eq (v Truthy), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> (DescriptorName, [Thingy]) -> UpdateT v m ()
+updateTruthyDescriptor :: (MonadEval (v Truthy) (v County) m, Eq (v Truthy), LogicValues (v Truthy) (v County)) => (forall m. MonadEval (v Truthy) (v County) m => Eval m v) -> (DescriptorName, [Thingy]) -> UpdateT v m ()
 updateTruthyDescriptor eval (name, params) = do
     (t, (_, deps)) <- listen $ do
-                ds <- view $ updateContextDefinitions . definedDescriptor (TruthyDescriptorIdent name)
+                ds <- viewDefinitions $ definedDescriptor (TruthyDescriptorIdent name)
                 ts <- forM ds $ \d ->
                     evalDescriptor eval STruthy name d params
                 return $ getJoin $ foldMap Join ts
     updateTruthyDescriptor' (name, params) t deps
 
-updateTruthyDescriptor' :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy]) -> v Truthy -> Set ShuffleDependency -> UpdateT v m ()
+updateTruthyDescriptor' :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy]) -> v Truthy -> [ShuffleDependencyWithValue v] -> UpdateT v m ()
 updateTruthyDescriptor' desc value deps = tell $ tellUpdate [UpdateTruthyDescriptor desc value, UpdateDependency deps $ DescriptorDependent desc]
 
-instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v County) (UpdateT v m) where
-    askTruthyDescriptor name@(TruthyDescriptorIdent name') params = do
-        tell $ tellDependency $ S.singleton $ DescriptorDependency (name', params)
-        UpdateT $ runReadEval $ askTruthyDescriptor name params
+updateShuffle :: ShuffleStepIdent -> UpdateT v m ()
+updateShuffle = undefined
+
+instance (MonadEval (v Truthy) (v County) m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v County) (UpdateT v m) where
+    askDefinitions = UpdateT $ askDefinitions
+    askTruthyDescriptor name@(TruthyDescriptorIdent _) params = do
+        value <- UpdateT $ askTruthyDescriptor name params
+        tell $ tellDependency [DescriptorDependencyWithValue (name, params) value]
+        return value
     askCountyDescriptor name@(CountyDescriptorIdent name') params = do
-        tell $ tellDependency $ S.singleton $ DescriptorDependency (name', params)
-        UpdateT $ runReadEval $ askCountyDescriptor name params
+        value <- UpdateT $ askCountyDescriptor name params
+        tell $ tellDependency [DescriptorDependencyWithValue (name, params) value]
+        return value
     askAccessTruthy name params = do
-      tell $ tellDependency $ S.singleton $ AccessDependency Truthy (name, params)
-      UpdateT $ runReadEval $ askAccessTruthy name params
+      value <- UpdateT $ askAccessTruthy name params
+      tell $ tellDependency [AccessDependencyWithValue STruthy (TruthyDescriptorIdent name, params) value]
+      return value
     askAccessCounty name params = do
-      tell $ tellDependency $ S.singleton $ AccessDependency County (name, params)
-      UpdateT $ runReadEval $ askAccessCounty name params
+      value <- UpdateT $ askAccessCounty name params
+      tell $ tellDependency [AccessDependencyWithValue SCounty (CountyDescriptorIdent name, params) value]
+      return value
     askShuffle rel x = do
-        tell $ tellDependency $ S.singleton $ ShuffleDependency rel x
-        UpdateT $ runReadEval $ askShuffle rel x
+      value <- UpdateT $ askShuffle rel x
+      tell $ tellDependency [ShuffleDependencyWithValue rel x value]
+      return value
     askLogicNodeAccess name = do
-        tell $ tellDependency $ S.singleton $ LogicNodeDependency name
-        UpdateT $ runReadEval $ askLogicNodeAccess name
+      value <- UpdateT $ askLogicNodeAccess name
+      tell $ tellDependency [LogicNodeDependencyWithValue name value]
+      return value
 
 newtype ReadEval v m a = ReadEval { runReadEval :: ReaderT (UpdateContext v) m a } deriving newtype (Functor, Applicative, Monad, MonadReader (UpdateContext v))
 
 instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v County) (ReadEval v m) where
+    askDefinitions = view $ _1
     askTruthyDescriptor name@(TruthyDescriptorIdent name') params = do
         val <- view $ _2 . truthyDescriptors . at (name, params)
         case val of
@@ -319,14 +352,8 @@ instance (Monad m, LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v
                 Backward name -> (name, MappedFrom x)
         view $ _2 . shuffles . to (\x -> getByCondition x name condition)
 
-newtype Lift (t :: (Type -> Type) -> Type -> Type) m a = Lift { unLift :: t m a }
-        deriving newtype ( Functor
-                         , Applicative
-                         , Monad
-                         , MonadTrans
-                         )
-
 instance (MonadEval t c m, MonadTrans t', Monad (t' m)) => MonadEval t c (Lift t' m) where
+    askDefinitions = lift $ askDefinitions
     askTruthyDescriptor name params = lift $ askTruthyDescriptor name params
     askCountyDescriptor name params = lift $ askCountyDescriptor name params
     askAccessTruthy name params = lift $ askAccessTruthy name params
@@ -339,6 +366,7 @@ askDescriptor STruthy = askTruthyDescriptor . TruthyDescriptorIdent
 askDescriptor SCounty = askCountyDescriptor . CountyDescriptorIdent
 
 deriving via Lift (ReaderT r) m instance (MonadEval t c m) => MonadEval t c (ReaderT r m)
+deriving via Lift (WriterT w) m instance (Monoid w, MonadEval t c m) => MonadEval t c (WriterT w m)
 
 askAccess :: forall (v :: DescriptorType -> Type) t m. (MonadEval (v Truthy) (v County) m) => SDescriptorType t -> DescriptorName -> [Thingy] -> m (v t)
 askAccess STruthy = askAccessTruthy
@@ -358,6 +386,7 @@ evalDescriptor eval dt name (Descriptor paramSpec rule) params = maybe (runReade
                     | otherwise -> Nothing
     tryBind (ConstantValue x : xs) (value : ys) m | x == value = tryBind xs ys m
                                                   | otherwise = Nothing
+    tryBind _ _ _ = Nothing
     goT :: DescriptorRule Truthy -> ReaderT (Map VarName Thingy) m (v Truthy)
     goT = go STruthy
     goC :: DescriptorRule County -> ReaderT (Map VarName Thingy) m (v County)
@@ -631,3 +660,4 @@ defaultEval = Eval {..} where
     evalValueAtState :: forall t'. SDescriptorType t' -> [StateBody Thingy] -> LogicValue t t' -> m (LogicValue t t')
     evalValueAtState STruthy sb x = return $ atState sb x
     evalValueAtState SCounty sb x = return $ atState sb x
+

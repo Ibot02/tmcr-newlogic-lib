@@ -22,6 +22,7 @@ import qualified TMCR.Logic.Logic as L
 
 import Data.Map (Map())
 import qualified Data.Map as M
+import qualified Data.Map.Merge.Lazy as M
 
 import Data.Set (Set())
 import qualified Data.Set as S
@@ -62,6 +63,8 @@ import TMCR.Module.Dependency
 import qualified Data.Text as T
 import TMCR.Logic.Algebra (DNF(..), singleToDNF, Meet(..), Join(..))
 import Data.Either (partitionEithers)
+
+import Debug.Trace (traceShowId, traceShow)
 
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
@@ -252,9 +255,6 @@ groupAndWildcards wildcards = fmap reverse . fst . foldl (\(m,w) (moduleIdent, m
     Right wildcard -> (M.mapWithKey (\ident xs -> if wildcards ident wildcard then (moduleIdent, mode, val) : xs else xs) m, (moduleIdent, mode, wildcard, val) : w)
     ) (M.empty, [])
 
-resolveConflicts' :: (MonadMerge m) => (Map ModuleIdentifier [a] -> m (b, Bool)) -> [(ModuleIdentifier, L.Mode, a)] -> m (b, Bool)
-resolveConflicts' = undefined
-
 -- mergeRecursively' :: forall m a i j b. (MonadMerge m) => (a -> [(L.Mode, Either i j, a)]) -> (i -> Bool) -> (i -> j -> Bool) -> ([(i,b)] -> b) -> Map ModuleIdentifier [a] -> m b
 -- mergeRecursively' deconstruct mayMultiDefine wildcards reconstruct = f where
 --     f i = fmap reconstruct $
@@ -398,6 +398,7 @@ mergeLogic' = errorContext "mergeLogic'" . helper . fmap (fmap determineCreation
                 Nothing -> return []
                 Just xs ->
                     fmap ((:[]) . Node v) $ helper $ M.fromListWith (<>) xs
+        (_:_,_:_) -> error "unreachable" --whether an element is Left or Right only depends on v, by which they are grouped outside this function
 
 --_ :: [(ModuleIdentifier, CreationRole, a)] -> m [(CreationRole, a)]
 
@@ -413,21 +414,24 @@ mergeLogic' = errorContext "mergeLogic'" . helper . fmap (fmap determineCreation
 --todo: appends to nothing don't error, multiple newdecls don't error (where not permitted)
 mergeLogic :: (MonadMerge m) => Map DescriptorName DescriptorDeclaration -> Map ModuleIdentifier [Forest] -> m (Forest' L.Value)
 mergeLogic descriptors sources = errorContext "mergeLogic" $ traverse (traverse $ fullyScopeNames descriptors . directEdges . generalizeForest) sources >>= mergeLogic' where
+{-
     f :: (MonadMerge m) => Map ModuleIdentifier [Forest' (L.Value, L.Mode)] -> m (Forest' L.Value)
     f = mergeRecursively
             destruct
             (flip wildcardMatches)
             reconstruct
-    destruct :: Forest' (L.Value, L.Mode) -> [(L.Mode, Either L.Value L.Value, Forest' (L.Value, L.Mode))]
+-}
+    --destruct :: Forest' (L.Value, L.Mode) -> [(L.Mode, Either L.Value L.Value, Forest' (L.Value, L.Mode))]
     --destruct (project -> NodeF (val,mode) xs) = fmap (\x -> (mode, (if hasWildcard val then Right else Left) val, x)) xs
-    destruct = fmap $ \(project -> NodeF (val, mode) xs) -> (mode, (if hasWildcard val then Right else Left) val, xs)
-    reconstruct :: Map i (Forest' i) -> Forest' i
-    reconstruct = fmap (embed . uncurry NodeF) . M.toList
+    --destruct = fmap $ \(project -> NodeF (val, mode) xs) -> (mode, (if hasWildcard val then Right else Left) val, xs)
+    --reconstruct :: Map i (Forest' i) -> Forest' i
+    --reconstruct = fmap (embed . uncurry NodeF) . M.toList
+    {-
     hasWildcard (L.Anon _) = False
     hasWildcard (L.NamedScoped _ name) = hasWildcard' name
     hasWildcard (L.NamedScoping _ name) = hasWildcard'' name
     hasWildcard (L.Edge name name2) = hasWildcard' name || hasWildcard' name2
-    --hasWildcard (L.EdgeUndirected name name2) = hasWildcard' name || hasWildcard' name2
+    hasWildcard (L.EdgeUndirected name name2) = error "unreachable" -- hasWildcard' name || hasWildcard' name2
     hasWildcard' L.FullWildcard = True
     hasWildcard' (L.Global name) = hasWildcard'' name
     hasWildcard' (L.Scoped names) = any hasWildcard'' names
@@ -444,6 +448,7 @@ mergeLogic descriptors sources = errorContext "mergeLogic" $ traverse (traverse 
     wildcardMatches' _ _ = False
     wildcardMatches'' L.Wildcard _ = True
     wildcardMatches'' x y = x == y
+-}
     directEdges :: Forest' (L.Value, a) -> Forest' (L.Value, a)
     directEdges = fmap (embed . (\(NodeF x ys) -> NodeF x $ directEdges ys) . project). concatMap (\case 
         Node (L.EdgeUndirected x y, mode) children -> [Node (L.Edge x y, mode) children, Node (L.Edge y x, mode) children]
@@ -592,8 +597,32 @@ mergeData xs = (mergeRecursively f (const absurd) g . fmap (fmap Just)) xs >>= e
     conflictContext :: a -> b -> [([(a, b)],c)] -> [([(a, b)],c)]
     conflictContext t i = fmap (first ((t,i):))
 
-mergeShuffle :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement]
-mergeShuffle = resolveConflicts (return . concat . toList) . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList where
+mergeShuffle :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m (Map ShuffleName (ShuffleInstruction, [ShuffleInstruction]))
+mergeShuffle input = errorContext "merge shuffles" $ do
+  let expansions :: Map ShuffleName [ShuffleInstruction]
+      expansions = M.fromListWith (<>) $ catMaybes $ fmap (\case
+        DefineShuffle _ _ -> Nothing
+        ExpandShuffle name instr -> Just (name, [instr])
+        ) $ concat $ toList input
+  let defines :: Map ShuffleName [(ModuleIdentifier, L.Mode, ShuffleInstruction)]
+      defines = M.fromListWith (<>) $ catMaybes $ fmap (\case
+        (ident, DefineShuffle name instr) -> Just $ (name, [(ident, L.ModeReplace, instr)])
+        (_, ExpandShuffle _ _) -> Nothing
+        ) $ concatMap (\(a, bs) -> fmap ((,) a) bs) $ M.toList input
+  defines' <- M.traverseWithKey (\n -> errorContext ("Shuffle definition for " <> n) . resolveConflicts (ensureSingleShuffleDefinition n . concat . toList)) defines
+  combineShuffleExpansions defines' expansions
+
+combineShuffleExpansions :: (MonadMerge m) => Map ShuffleName ShuffleInstruction -> Map ShuffleName [ShuffleInstruction] -> m (Map ShuffleName (ShuffleInstruction, [ShuffleInstruction]))
+combineShuffleExpansions = M.mergeA (M.mapMissing (\_ i -> (i,[]))) (M.traverseMissing (\k _ -> mergeErrorAppendToUndefined k)) (M.zipWithMatched (const (,)))
+
+ensureSingleShuffleDefinition :: (MonadMerge m) => ShuffleName -> [ShuffleInstruction] -> m ShuffleInstruction
+ensureSingleShuffleDefinition n [x] = return x
+ensureSingleShuffleDefinition n [] = mergeErrorAppendToUndefined n
+ensureSingleShuffleDefinition n (_:_:_) = errorGenericMergeError 12
+
+--totally wrong
+mergeShuffle' :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement]
+mergeShuffle' = resolveConflicts (return . concat . toList) . traceShowId . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList . traceShowId where
     tag ident x@(DefineShuffle _ _) = (ident, L.ModeReplace, x)
     tag ident x@(ExpandShuffle _ _) = (ident, L.ModeAppend, x)
 
@@ -636,7 +665,7 @@ mergeContent header modules = do
         transformLogic descriptors l
     let patches = fmap (fmap (^. moduleFullContentPatches)) modules
     logicData <- mergeData $ fmap (^. _2 . moduleFullContentData) modules
-    shuffles <- (mergeShuffle $ fmap (^. _2 . moduleFullContentShuffles) modules) >>= groupShuffle
+    shuffles <- mergeShuffle $ fmap (^. _2 . moduleFullContentShuffles) modules
     let (descriptorDefsTruthy, descriptorDefsCounty) = DM.foldrWithKey mergeContentHelper (mempty, mempty) descriptorDefs
     return $ GameDef descriptors descriptorDefsTruthy descriptorDefsCounty logic patches logicData shuffles
 

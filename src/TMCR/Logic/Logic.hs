@@ -135,22 +135,6 @@ logicParser scopes = fmap concat $ many $ nonIndented scn $ parseTree (getScopes
         target <- parseLocalName
         return $ [Edge source target]
     parseType = fmap T.pack . lexeme sc $ (:) <$> lowerChar <*> many alphaNumChar
-    parseScopedName :: m ScopedName
-    --parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> (try $ FullWildcard <$ symbol sc "**") <|> parseLocalName --wildcards are no longer a thing
-    parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> parseLocalName
-    parseLocalName :: m ScopedName
-    parseLocalName = (lexeme sc $ Scoped <$> (parseName' `sepBy1` char '.'))
-    parseName :: m Name
-    parseName = lexeme sc parseName' <?> "name"
-    parseName' :: m Name
-    --parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar)) <|> (Wildcard <$ char '*') --wildcards are no longer a thing
-    parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar))
-    possiblyEscapedChar :: m Char
-    possiblyEscapedChar = do
-        c <- satisfy (/= '"')
-        case c of
-            '\\' -> anySingle
-            _ -> return c
     parseMode :: m Mode
     parseMode = lexeme sc $ label "mode" $ (ModeDefault <$ char ':') <|> (ModeAppend <$ string "+:") <|> (ModeReplace <$ string "!:")
                                               <|> (ModeAppendIfExists <$ string "+?:") <|> (ModeReplaceIfExists <$ string "!?:") <|> (ModeReplaceOrCreate <$ string "!+:")
@@ -173,3 +157,18 @@ logicParser scopes = fmap concat $ many $ nonIndented scn $ parseTree (getScopes
         between (symbol sc "(") (symbol sc ")") $ Node (Anon name) ModeDefault . concat <$> (inlineChild [] `sepBy` (symbol sc sep))) . filter (\case
             SugarOpList _ _ -> True
             _ -> False)
+
+parseScopedName :: (MonadParsec Void Text m) => m ScopedName
+parseScopedName = label "name" $ (char 'g' *> (Global <$> parseName)) <|> parseLocalName
+parseLocalName :: (MonadParsec Void Text m) => m ScopedName
+parseLocalName = (lexeme sc $ Scoped <$> (parseName' `sepBy1` char '.'))
+parseName :: (MonadParsec Void Text m) => m Name
+parseName = lexeme sc parseName' <?> "name"
+parseName' :: (MonadParsec Void Text m) => m Name
+parseName' = (QuotedName . T.pack <$> between (char '"') (char '"') (many possiblyEscapedChar)) <|> (PlainName . T.pack <$> ((:) <$> upperChar <*> many alphaNumChar))
+possiblyEscapedChar :: (MonadParsec Void Text m) => m Char
+possiblyEscapedChar = do
+    c <- satisfy (/= '"')
+    case c of
+        '\\' -> anySingle
+        _ -> return c

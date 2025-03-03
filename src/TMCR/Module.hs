@@ -115,8 +115,8 @@ instance FromJSON Version where
     parseJSON = withText "Version" $ either (fail . show) return . MP.parse parseVersion ""
 
 instance ToJSON VersionSpec where
-    toJSON (VersionSpecRange Nothing Nothing) = String "*"
     toJSON (VersionSpecRange x y) = String $ case (fmap (h ">=") x, fmap (h "<") y) of
+        (Nothing, Nothing) -> "*"
         (Nothing, Just y) -> y
         (Just x, Nothing) -> x
         (Just x, Just y) -> x <> " , " <> y

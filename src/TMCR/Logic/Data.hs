@@ -26,14 +26,14 @@ import Data.Aeson.Key (toString)
 import Data.Aeson.KeyMap (toMapText, delete)
 import qualified Text.Megaparsec.Char.Lexer as MPL
 import Text.Megaparsec as MP
-import TMCR.Logic.Common (Name, ParserC, PossiblyScopedName (..), ParserCT, parsePossiblyScopedName, Nteger (Finite), Thingy)
+import TMCR.Logic.Common (Name, ParserC, PossiblyScopedName (..), ParserCT, parsePossiblyScopedName, Nteger (Finite), Thingy, parsePossiblyScopedName')
 import Text.Megaparsec.Char as MP
 import Control.Monad.Reader
 import Data.Kind (Constraint, Type)
 import Data.Monoid (Endo)
 import Data.Maybe (fromMaybe)
 
-
+import Data.Functor.Identity (Identity(..))
 
 
 
@@ -63,7 +63,6 @@ newtype LogicData' = LogicData' (Map Name (Either Text (Mode, IntMap (Maybe Logi
 $(deriveJSON defaultOptions ''Mode)
 
 instance FromJSON LogicData' where
-
     parseJSON = stepObj where
         stepObj = withObject "LogicData" $ fmap LogicData' . traverse step . toMapText
         stepObj' v = (Just <$> stepObj v) <|> withNull Nothing v
@@ -81,25 +80,7 @@ instance FromJSON LogicData' where
                         v' <- stepObj' v
                         return $ IM.singleton n v') o'
             return $ Right (mode, c)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        step v = fail $ "Unsupported Data Value " ++ show v
 
 withNull a Null = pure a
 withNull _ _ = fail "expected null"
@@ -213,8 +194,10 @@ runScoped :: LensLike f (scope, s) t (scope, a) b -> scope -> LensLike f s t a b
 runScoped sT scope f s = sT (\(_,a) -> f a) (scope, s)
 
 evalDataLookup :: LogicData -> DataLookup -> [(Thingy, Nteger, Thingy)]
-evalDataLookup input (DataLookup steps Nothing (steps', target)) = fmap (\x -> (Global "", Finite 1, x)) $ input ^.. runScoped (evalDataSteps steps . evalDataSteps steps' . evalDataTarget target) []
-evalDataLookup input (DataLookup steps (Just (stepsL, targetL)) (stepsR, targetR)) = input ^.. runScoped (evalDataSteps steps . scopedTo (\scopes input' -> [(a, Finite 1, b) | a <- input' ^.. runScoped (evalDataSteps stepsL . evalDataTarget targetL) scopes, b <- input' ^.. runScoped (evalDataSteps stepsR . evalDataTarget targetR) scopes]) . scoped traverse) []
+evalDataLookup input (DataLookup steps Nothing (steps', target)) =
+  fmap (\x -> (Global "", Finite 1, x)) $ input ^.. runScoped (evalDataSteps steps . evalDataSteps steps' . evalDataTarget target) []
+evalDataLookup input (DataLookup steps (Just (stepsL, targetL)) (stepsR, targetR)) =
+  input ^.. runScoped (evalDataSteps steps . scopedTo (\scopes input' -> [(a, Finite 1, b) | a <- input' ^.. runScoped (evalDataSteps stepsL . evalDataTarget targetL) scopes, b <- input' ^.. runScoped (evalDataSteps stepsR . evalDataTarget targetR) scopes]) . scoped traverse) []
 
 logicData :: Iso LogicData LogicData (Map Text (Either Text (IntMap LogicData))) (Map Text (Either Text (IntMap LogicData)))
 logicData = coerced
@@ -230,8 +213,16 @@ evalDataStep (DataFilter (DataFilterStep steps name cond)) = scoped $ filtered (
 evalDataTarget :: Monoid r => DataTarget -> ScopedGetting [Text] r LogicData PossiblyScopedName
 evalDataTarget (DataTarget name TargetGlobal) = scoped $ logicData . at name . _Just . _Left . to Global
 evalDataTarget (DataTarget name TargetUnscoped) = scoped $ logicData . at name . _Just . _Left . to (ScopedName . (:[]))
-evalDataTarget (DataTarget name TargetScoped) = scoped (logicData . at name . _Just . _Left) . scopedTo (\scopes name -> ScopedName (scopes <> [name]))
+evalDataTarget (DataTarget name TargetScoped) = scoped (logicData . at name . _Just . _Left) . scopedTo parseAndScopeName
 
+parseAndScopeName :: [Text] -> Text -> PossiblyScopedName
+parseAndScopeName scopes name = inScopes scopes $ either (const $ ScopedName (scopes <> [name])) id $ flip runReader () $ runParserT (parsePossiblyScopedName' <* eof) "" name
+
+inScopes :: [Text] -> PossiblyScopedName -> PossiblyScopedName
+inScopes _ g@(Global _) = g
+inScopes scopes (ScopedName scopes') = ScopedName $ reverse (drop (length scopes' - 1) (reverse scopes)) <> scopes'
+
+scopedTo :: (s -> a -> b) -> ScopedGetting s r a b
 scopedTo g = (\f (scopes, a) -> (\(Const r) -> Const r) $ f (scopes, g scopes a))
 
 matches :: FilterCondition -> PossiblyScopedName -> Bool
