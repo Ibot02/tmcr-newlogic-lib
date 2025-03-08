@@ -8,9 +8,12 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
-module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), StatefulLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF) where
+{-# LANGUAGE FlexibleContexts #-}
+module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), StatefulLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, Dual(..), OoLattice(..)) where
 
 import Data.Kind (Type)
+
+import Data.Coerce (coerce)
 
 import TMCR.Logic.Descriptor
 import TMCR.Logic.Common
@@ -26,6 +29,9 @@ class Lattice a where
     join :: a -> a -> a
     bottom :: a
     top :: a
+
+class (Lattice a) => OoLattice a where
+    ool :: a
 
 instance Lattice Bool where
     meet = (&&)
@@ -229,8 +235,8 @@ newtype ComposeByMeet a = ComposeByMeet a deriving newtype Lattice
 instance (Lattice a) => CompLattice (ComposeByMeet a) where
     composeL = meet
 
-deriving via (ComposeByMeet Bool) instance (CompLattice Bool)
-deriving via (ComposeByMeet (DNF a)) instance (Ord a) => (CompLattice (DNF a))
+--deriving via (ComposeByMeet Bool) instance (CompLattice Bool)
+--deriving via (ComposeByMeet (DNF a)) instance (Ord a) => (CompLattice (DNF a))
 
 class (CompLattice a) => StatefulLattice s a | a -> s where
     preState :: s -> a
@@ -251,3 +257,23 @@ instance (StatefulLattice s t) => StatefulLattice s (LogicValue t County) where
     preState s = LogicCountyValue $ preState s
     postState s = LogicCountyValue $ postState s
     atState s (LogicCountyValue t) = LogicCountyValue $ atState s t
+
+newtype Dual a = Dual { getDual :: a } deriving (Eq, Ord, Show)
+
+instance Lattice (Dual Bool) where
+    bottom = Dual top
+    top = Dual bottom
+    meet (Dual x) (Dual y) = Dual (join x y)
+    join (Dual x) (Dual y) = Dual (meet x y)
+
+instance (Ord a) => Lattice (Dual (DNF a)) where
+    bottom = Dual top
+    top = Dual bottom
+    meet (Dual x) (Dual y) = Dual (join x y)
+    join (Dual x) (Dual y) = Dual (meet x y)
+
+instance (Lattice (Dual a)) => Lattice (Dual (OolAble a)) where
+    bottom = Dual $ OolAble (getDual bottom) (getDual bottom)
+    top = Dual $ OolAble (getDual top) (getDual top)
+    meet (Dual (OolAble x1 x2)) (Dual (OolAble y1 y2)) = Dual $ OolAble (getDual $ meet (Dual x1) (Dual y1)) (getDual $ meet (Dual x1) (Dual y2) `join` meet (Dual x2) (Dual y1) `join` meet (Dual x2) (Dual y2))
+    join (Dual (OolAble x1 x2)) (Dual (OolAble y1 y2)) = Dual $ OolAble (getDual $ join (Dual x1) (Dual y1)) $ getDual $ Dual x1 `join` Dual x2 `join` Dual y1 `join` Dual y2

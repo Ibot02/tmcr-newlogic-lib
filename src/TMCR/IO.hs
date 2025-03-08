@@ -29,6 +29,7 @@ import Control.Monad.Trans.Maybe (MaybeT(..))
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DM
 import TMCR.Logic.Descriptor
+import TMCR.Parser.Descriptor
 import Data.Maybe (catMaybes, maybeToList)
 import TMCR.Logic.Merge (MonadMerge (..), GameDef, mergeDescriptorDeclarations, mergeHeader, mergeContent)
 import Control.Lens
@@ -39,6 +40,7 @@ import Polysemy
 import Polysemy.Error
 import qualified Data.Text as T
 import TMCR.Logic.Common
+import TMCR.Parser.Common
 import Text.Megaparsec (ParseErrorBundle, parseErrorTextPretty, errorBundlePretty, runParserT)
 import Data.Void (Void)
 import Data.Text (Text)
@@ -46,10 +48,11 @@ import Polysemy.Reader
 import Polysemy.State
 import Data.Map (Map)
 import qualified Data.Text.Encoding as TE
-import TMCR.Logic.Logic
-    ( logicParser, Sugar, Scopes, _ModeAppend )
+import TMCR.Logic.Logic ( Sugar, Scopes, _ModeAppend )
+import TMCR.Parser.Logic ( logicParser )
 import TMCR.Logic.Data (LogicData')
-import TMCR.Logic.Shuffle (parseShuffleInstruction, parseShuffleStatements, RandomSeed())
+import TMCR.Logic.Shuffle (RandomSeed())
+import TMCR.Parser.Shuffle (parseShuffleInstruction, parseShuffleStatements)
 import Data.Aeson (decode)
 #ifdef MIN_VERSION_yaml
 import Data.Yaml (decodeEither, ParseException, decodeEither')

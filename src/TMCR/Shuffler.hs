@@ -20,6 +20,8 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE EmptyCase #-}
 module TMCR.Shuffler where
 
 import TMCR.Logic.Descriptor
@@ -35,6 +37,8 @@ import qualified Data.Map.Merge.Lazy as M
 
 import Data.Set (Set)
 import qualified Data.Set as S
+
+import Data.Functor.Const (Const(..))
 
 import Control.Monad hiding (join)
 
@@ -152,6 +156,57 @@ data Eval m (v :: DescriptorType -> Type) = Eval {
     , evalDeferConsumer :: forall t. (Int, Map VarName Thingy, DescriptorIdent t, [Thingy]) -> m (v t)
     , evalValueAtState :: forall t. SDescriptorType t -> [StateBody Thingy] -> v t -> m (v t)
     }
+
+data Eval' effs v m res = Eval' {
+      runEval' :: forall t. DescriptorRule' effs t v -> (forall f. (Traversable f) => f (DescriptorRule' effs t v) -> m (f (res t v))) -> m (res t v)
+      --eval' :: forall t. SDescriptorType t -> DescriptorRuleF effs t v res -> m (res t v)
+    }
+
+data Res rval (v :: DescriptorType -> Type) (t :: DescriptorType) val where
+  Res :: v t -> Res val v t val
+
+basicEval' :: forall m v. (Monad m, LogicValues (v Truthy) (v County), OoLattice (v Truthy)) => Eval' '[] Thingy m (Res Thingy v)
+basicEval' = Eval' {..} where
+  runEval' :: DescriptorRule' '[] t Thingy -> (forall f. (Traversable f) => f (DescriptorRule' '[] t Thingy) -> m (f (Res Thingy v t Thingy))) -> m (Res Thingy v t Thingy)
+  runEval' (Constant (TruthyLiteral OolTrue)) e = evalConst e top
+  runEval' (Constant (TruthyLiteral OolOol)) e = evalConst e ool
+  runEval' (Constant (TruthyLiteral OolFalse)) e = evalConst e bottom
+  runEval' (Constant (CountyLiteral n)) e = evalConst e $ fromNteger n
+  runEval' (IsEqual a b) e = evalConst e $ if a == b then top else bottom
+  runEval' (Exist _ _ _) e = case witness @QuantifiedEff @'[] of
+  evalConst e x = do
+    (Const x') <- e $ Const x
+    return $ Res x'
+
+  eval' ::  forall t. SDescriptorType t -> DescriptorRuleF '[] t Thingy (Res Thingy v) -> m (Res Thingy v t Thingy)
+  eval' t (ConstantF (TruthyLiteral OolTrue)) = pure $ Res top
+  eval' t (ConstantF (TruthyLiteral OolFalse)) = pure $ Res bottom
+  eval' t (ConstantF (TruthyLiteral OolOol)) = pure $ Res ool
+  eval' t (ConstantF (CountyLiteral n)) = pure $ Res $ fromNteger n
+  eval' t (IsEqualF a b) = pure $ Res $ if a == b then top else bottom
+  eval' t (CallDescriptorF _ _ _) = case witness @CallEff @'[] of --no possible matches
+  eval' t (CanAccessF _ _ _ _) = case witness @CallEff @'[] of --no possible matches
+  eval' t (ScaleF (Res v) n) = pure $ Res $ scaleC v n
+  eval' t (SumF rs) = pure $ Res $ foldr addCounty bottom $ getRess rs
+  eval' t (AtLeastF r n) = pure $ Res $ atLeast n $ getRes r
+  eval' t (ExistF _ _ _) = case witness @QuantifiedEff @'[] of
+  eval' t (CountF _ _ _) = case witness @QuantifiedEff @'[] of
+  eval' STruthy (MinF rs) = pure $ Res $ getMeet $ foldMap Meet $ getRess rs
+  eval' SCounty (MinF rs) = pure $ Res $ getMeet $ foldMap Meet $ getRess rs
+  eval' STruthy (MaxF rs) = pure $ Res $ getJoin $ foldMap Join $ getRess rs
+  eval' SCounty (MaxF rs) = pure $ Res $ getJoin $ foldMap Join $ getRess rs
+  eval' SCounty (CastF r) = pure $ Res $ cast $ getRes r
+  eval' t (PriorStateF _) = case witness @StateyEff @'[] of
+  eval' t (PostStateF _) = case witness @StateyEff @'[] of
+  eval' t (ConsumeF _ _ _ _) = case witness @ConsumeyEff @'[] of
+  getRes :: Res val v t val -> v t
+  getRes (Res x) = x
+  getRess :: [Res val v t val] -> [v t]
+  getRess = fmap getRes
+  fromNteger Infinite = top
+  fromNteger (Finite n) = fromNumber n
+
+
 
 data Definitions = Definitions {
                      _definedEdges :: TaggedGraph (Join (DNF (DescriptorName, [Thingy]))) (Maybe LogicNodeName)
@@ -418,12 +473,12 @@ evalDescriptor eval dt name (Descriptor paramSpec rule) params = maybe (runReade
     go _ (AtLeast a n) = do
         x <- goC a
         evalAtLeast eval x n
-    go _ (Exist var rel val rule) = do
+    go _ (Exist rel val rule) = do
         val <- valToThingy val
-        evalExists eval rel val $ \val' -> local (M.insert var val') $ goT rule
-    go _ (Count var rel val rule) = do
+        evalExists eval rel val $ \val' -> goT $ fmap (maybe (ConstantValue val') id) rule
+    go _ (Count rel val rule) = do
         val <- valToThingy val
-        evalCount eval rel val $ \val' -> local (M.insert var val') $ goT rule
+        evalCount eval rel val $ \val' -> goT $ fmap (maybe (ConstantValue val') id) rule
     go t (Min rules) = traverse (go t) rules >>= evalMin eval t
     go t (Max rules) = traverse (go t) rules >>= evalMax eval t
     go _ (Cast rule) = goT rule >>= evalCast eval

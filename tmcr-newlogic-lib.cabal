@@ -24,6 +24,10 @@ library
       TMCR.Logic.Graphs
       TMCR.Logic.Data
       TMCR.Logic.Algebra
+      TMCR.Parser.Common
+      TMCR.Parser.Data
+      TMCR.Parser.Shuffle
+      TMCR.Parser.Descriptor
       TMCR.Module.Dependency
       TMCR.IO
       TMCR.Shuffler
