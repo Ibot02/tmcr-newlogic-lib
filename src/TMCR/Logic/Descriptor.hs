@@ -157,63 +157,29 @@ deriving instance Show (SDescriptorType t)
 deriving instance Eq (SDescriptorType t)
 deriving instance Ord (SDescriptorType t)
 
-data DescriptorRuleEff = QuantifiedEff | StateyEff | ConsumeyEff | CallEff
+type DescriptorRule t = DescriptorRule' t Value
 
-type DescriptorRuleEffs = '[ DescriptorRuleEff ]
-
-type DescriptorRule t = DescriptorRule' AllEffs t Value
-type AllEffs = [QuantifiedEff, StateyEff, ConsumeyEff, CallEff]
-
-data Witness (e :: k) (es :: [k]) where
-  WitnessNow :: Witness e (e ': es)
-  WitnessLater :: Witness e es -> Witness e (e' ': es)
-
-class HasEff (e :: DescriptorRuleEff) (es :: [DescriptorRuleEff]) where
-  witness :: Witness e es
-instance HasEff e (e ': es) where
-  witness = WitnessNow
-instance {-# Overlappable #-} HasEff e es => HasEff e (e' ': es) where
-  witness = WitnessLater witness
-
-data DescriptorRule' (effs :: [DescriptorRuleEff]) (t :: DescriptorType) v where
-    Constant :: Literal t -> DescriptorRule' effs t v
-    IsEqual :: v -> v -> DescriptorRule' effs Truthy v
-    CallDescriptor :: (HasEff CallEff effs) => SDescriptorType t -> Name -> [v] -> DescriptorRule' effs t v
-    CanAccess :: (HasEff CallEff effs) => SDescriptorType t -> Name -> [v] -> [StateBody v] -> DescriptorRule' effs t v
-    --Product :: DescriptorRule County -> DescriptorRule County -> DescriptorRule County  -- removed due to being buggy and no know use cases - we'll have scale instead
-    Scale :: DescriptorRule' effs County v -> Nteger -> DescriptorRule' effs County v
-    Sum :: [DescriptorRule' effs County v] -> DescriptorRule' effs County v
-    AtLeast :: DescriptorRule' effs County v -> Nteger -> DescriptorRule' effs Truthy v
-    Exist :: (HasEff QuantifiedEff effs) => Relation -> v -> DescriptorRule' effs Truthy (Maybe v) -> DescriptorRule' effs Truthy v
-    Count :: (HasEff QuantifiedEff effs) => Relation -> v -> DescriptorRule' effs Truthy (Maybe v) -> DescriptorRule' effs County v
-    Min :: SDescriptorType t -> [DescriptorRule' effs t v] -> DescriptorRule' effs t v
-    Max :: SDescriptorType t -> [DescriptorRule' effs t v] -> DescriptorRule' effs t v
-    Cast :: DescriptorRule' effs Truthy v -> DescriptorRule' effs County v -- truth -> infinity, false -> 0
+data DescriptorRule' (t :: DescriptorType) v where
+    Constant :: Literal t -> DescriptorRule' t v
+    IsEqual :: v -> v -> DescriptorRule' Truthy v
+    CallDescriptor :: SDescriptorType t -> Name -> [v] -> DescriptorRule' t v
+    CanAccess :: SDescriptorType t -> Name -> [v] -> [StateBody v] -> DescriptorRule' t v
+    Scale :: DescriptorRule' County v -> Nteger -> DescriptorRule' County v
+    Sum :: [DescriptorRule' County v] -> DescriptorRule' County v
+    AtLeast :: DescriptorRule' County v -> Nteger -> DescriptorRule' Truthy v
+    Exist :: Relation -> v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' Truthy v
+    Count :: Relation -> v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' County v
+    Min :: SDescriptorType t -> [DescriptorRule' t v] -> DescriptorRule' t v
+    Max :: SDescriptorType t -> [DescriptorRule' t v] -> DescriptorRule' t v
+    Cast :: DescriptorRule' Truthy v -> DescriptorRule' County v -- truth -> infinity, false -> 0
     --PriorState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
     --PostState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
-    Consume :: (HasEff ConsumeyEff effs) => ConsumeUUID -> Name -> [v] -> DescriptorRule' effs t v -> DescriptorRule' effs t v
+    Consume :: ConsumeUUID -> Name -> [v] -> DescriptorRule' t v -> DescriptorRule' t v
 
-data DescriptorRuleF (effs :: [DescriptorRuleEff]) (t :: DescriptorType) (v :: Type) (f :: DescriptorType -> Type -> Type) where
-    ConstantF :: Literal t -> DescriptorRuleF effs t v f
-    IsEqualF :: v -> v -> DescriptorRuleF effs Truthy v f
-    CallDescriptorF :: (HasEff CallEff effs) => SDescriptorType t -> Name -> [v] -> DescriptorRuleF effs t v f
-    CanAccessF :: (HasEff CallEff effs) => SDescriptorType t -> Name -> [v] -> [StateBody v] -> DescriptorRuleF effs t v f
-    ScaleF :: f County v -> Nteger -> DescriptorRuleF effs County v f
-    SumF :: [f County v] -> DescriptorRuleF effs County v f
-    AtLeastF :: f County v -> Nteger -> DescriptorRuleF effs Truthy v f
-    ExistF :: (HasEff QuantifiedEff effs) => Relation -> v -> f Truthy (Maybe v) -> DescriptorRuleF effs Truthy v f
-    CountF :: (HasEff QuantifiedEff effs) => Relation -> v -> f Truthy (Maybe v) -> DescriptorRuleF effs County v f
-    MinF :: SDescriptorType t -> [f t v] -> DescriptorRuleF effs t v f
-    MaxF :: SDescriptorType t -> [f t v] -> DescriptorRuleF effs t v f
-    CastF :: f Truthy v -> DescriptorRuleF effs County v f
-    --PriorStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
-    --PostStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
-    ConsumeF :: (HasEff ConsumeyEff effs) => ConsumeUUID -> Name -> [v] -> f t v -> DescriptorRuleF effs t v f
-
-deriving instance (Show v) => Show (DescriptorRule' effs t v)
-deriving instance (Eq v) => Eq (DescriptorRule' effs t v)
-deriving instance (Ord v) => Ord (DescriptorRule' effs t v)
-deriving instance Functor (DescriptorRule' effs t)
+deriving instance (Show v) => Show (DescriptorRule' t v)
+deriving instance (Eq v) => Eq (DescriptorRule' t v)
+deriving instance (Ord v) => Ord (DescriptorRule' t v)
+deriving instance Functor (DescriptorRule' t)
 
 data Literal (t :: DescriptorType) where
     TruthyLiteral :: Oolean -> Literal Truthy
@@ -247,63 +213,12 @@ data DescriptorRole = DefaultRole | Reachability deriving (Eq, Ord, Show, Enum, 
 
 $(makePrisms ''Value)
 
-embedDR :: DescriptorRuleF effs t v (DescriptorRule' effs) -> DescriptorRule' effs t v
-embedDR (ConstantF l) = Constant l
-embedDR (IsEqualF v v') = IsEqual v v'
-embedDR (CallDescriptorF t d args) = CallDescriptor t d args
-embedDR (CanAccessF t d args s) = CanAccess t d args s
-embedDR (ScaleF r n) = Scale r n
-embedDR (SumF rs) = Sum rs
-embedDR (AtLeastF r n) = AtLeast r n
-embedDR (ExistF rel v r) = Exist rel v r
-embedDR (CountF rel v r) = Count rel v r
-embedDR (MinF t rs) = Min t rs
-embedDR (MaxF t rs) = Max t rs
-embedDR (CastF r) = Cast r
---embedDR (PriorStateF s) = PriorState s
---embedDR (PostStateF s) = PostState s
-embedDR (ConsumeF c n vs r) = Consume c n vs r
-projectDR :: DescriptorRule' effs t v -> DescriptorRuleF effs t v (DescriptorRule' effs)
-projectDR (Constant l) = ConstantF l
-projectDR (IsEqual v v') = IsEqualF v v'
-projectDR (CallDescriptor t d args) = CallDescriptorF t d args
-projectDR (CanAccess t d args s) = CanAccessF t d args s
-projectDR (Scale r n) = ScaleF r n
-projectDR (Sum rs) = SumF rs
-projectDR (AtLeast r n) = AtLeastF r n
-projectDR (Exist rel v r) = ExistF rel v r
-projectDR (Count rel v r) = CountF rel v r
-projectDR (Min t rs) = MinF t rs
-projectDR (Max t rs) = MaxF t rs
-projectDR (Cast r) = CastF r
---projectDR (PriorState s) = PriorStateF s
---projectDR (PostState s) = PostStateF s
-projectDR (Consume c n vs r) = ConsumeF c n vs r
-{-
-traverseDR :: (Monad m) => (forall t v. res t v -> m (res' t v)) -> DescriptorRuleF effs t v res -> m (DescriptorRuleF effs t v res')
-traverseDR f (ConstantF l)              = pure $ ConstantF l
-traverseDR f (SumF rs)                  = SumF <$> traverse f rs
-traverseDR f (ExistF rel v r) = ExistF rel v <$> f r
-traverseDR f (IsEqualF v v')            = IsEqual v v'
-traverseDR f (CallDescriptorF t d args) = CallDescriptor t d args
-traverseDR f (CanAccessF t d args s)    = CanAccess t d args s
-traverseDR f (ScaleF r n)               = Scale r n
-traverseDR f (AtLeastF r n) = AtLeast r n
-traverseDR f (CountF rel v r) = Count rel v r
-traverseDR f (MinF rs) = Min rs
-traverseDR f (MaxF rs) = Max rs
-traverseDR f (CastF r) = Cast r
-traverseDR f (PriorStateF s) = PriorState s
-traverseDR f (PostStateF s) = PostState s
-traverseDR f (ConsumeF c n vs r) = Consume c n vs r
--}
-
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 
 type DescriptorDeclarations = Map (Name, DescriptorRole) ([Scoping], DescriptorType)
 getDescriptorDeclarations :: Map DescriptorName DescriptorDeclaration -> DescriptorDeclarations
 getDescriptorDeclarations = Map.fromList . fmap (\(name, decl) -> ((name, case decl ^. descriptorDeclarationExport of {Just DescriptorExportTarget -> Reachability; _ -> DefaultRole}), (decl ^. descriptorDeclarationArguments, decl ^. descriptorDeclarationType))) . Map.toList
 
-castIfNeccessary :: SDescriptorType t -> DescriptorRule' effs Truthy v -> DescriptorRule' effs t v
+castIfNeccessary :: SDescriptorType t -> DescriptorRule' Truthy v -> DescriptorRule' t v
 castIfNeccessary STruthy = id
 castIfNeccessary SCounty = Cast

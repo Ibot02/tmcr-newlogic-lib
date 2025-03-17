@@ -151,7 +151,7 @@ askAccess (TruthyDescriptorIdent name) = askAccessTruthy name
 askAccess (CountyDescriptorIdent name) = askAccessCounty name
 
 
-type Eval m v = forall t. DescriptorRule' AllEffs t Thingy -> m (v t)
+type Eval m v = forall t. DescriptorRule' t Thingy -> m (v t)
 
 data Eval' m v f x = Eval' {
     evalIsEq :: x -> x -> m (v Truthy)
@@ -160,13 +160,13 @@ data Eval' m v f x = Eval' {
   , evalQuantify :: Relation -> Thingy -> m (f Thingy)
   , evalExists :: f (v Truthy) -> m (v Truthy)
   , evalCount :: f (v Truthy) -> m (v County)
-  , evalConsume :: forall t'. ConsumeUUID -> DescriptorName -> [Thingy] -> DescriptorRule' AllEffs t' Thingy -> m (v t') -- this is probably wrong, but let's put off consuming until later
+  , evalConsume :: forall t'. ConsumeUUID -> DescriptorName -> [Thingy] -> DescriptorRule' t' Thingy -> m (v t') -- this is probably wrong, but let's put off consuming until later
   }
 
 
 basicEval' :: forall m f v. (Monad m, Traversable f, LogicValues (v Truthy) (v County), OoLattice (v Truthy)) => Eval' m v f Thingy -> Eval m v
 basicEval' Eval' {..} = eval where
-  eval :: forall t'. DescriptorRule' AllEffs t' Thingy -> m (v t')
+  eval :: forall t'. DescriptorRule' t' Thingy -> m (v t')
   eval (Constant (TruthyLiteral OolTrue)) = return $ top
   eval (Constant (TruthyLiteral OolOol)) = return $ ool
   eval (Constant (TruthyLiteral OolFalse)) = return $ bottom

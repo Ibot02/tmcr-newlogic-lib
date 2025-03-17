@@ -128,9 +128,9 @@ parseRule boundVars t cc = label "rule" $ do
             Truthy -> fmap (cc STruthy) $ typecheck boundVars untyped STruthy
             County -> fmap (cc SCounty) $ typecheck boundVars untyped SCounty
 
-typecheck :: [VarName] -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' AllEffs t Value)
+typecheck :: [VarName] -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t Value)
 typecheck varNames = typecheck' (\pos v -> if v `elem` varNames then return (Variable v) else strErrorWithPos pos "") ConstantValue
-typecheck' :: (Int -> VarName -> Parser v) -> (PossiblyScopedName -> v) -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' AllEffs t v)
+typecheck' :: (Int -> VarName -> Parser v) -> (PossiblyScopedName -> v) -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t v)
 typecheck' parseVar c (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
 typecheck' parseVar c (UntypedDescriptorRule pos (UTConstant (UTNteger b))) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but Nteger (" <> show b <> ") is County."
 typecheck' parseVar c (UntypedDescriptorRule _ (UTConstant (UTNteger b))) SCounty = return $ Constant $ CountyLiteral b
