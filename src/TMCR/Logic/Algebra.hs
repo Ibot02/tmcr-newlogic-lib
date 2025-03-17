@@ -9,7 +9,7 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
-module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), CompLattice(..), StatefulLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), DNF(..), singleToDNF, Dual(..), OoLattice(..)) where
+module TMCR.Logic.Algebra (OolAble(), liftOolAble, outOfLogic, getInLogic, getOutOfLogic, Count(), liftCount, finitePart, infiniteExtension, Lattice(..), EqLattice(..), Canonical(..), CountyLattice(..), LogicValues(..), LogicValue(..), latticeFromMaybe, Meet(..), Join(..), LatticeSum(..), DNF(..), singleToDNF, Dual(..), OoLattice(..)) where
 
 import Data.Kind (Type)
 
@@ -41,6 +41,7 @@ instance Lattice Bool where
 
 newtype Meet a = Meet { getMeet :: a } deriving (Eq, Ord, Show)
 newtype Join a = Join { getJoin :: a } deriving (Eq, Ord, Show)
+newtype LatticeSum a = LatticeSum { getLatticeSum :: a } deriving (Eq, Ord, Show)
 
 instance (Lattice a) => Semigroup (Meet a) where
     Meet a <> Meet b = Meet $ meet a b
@@ -51,6 +52,11 @@ instance (Lattice a) => Semigroup (Join a) where
     Join a <> Join b = Join $ join a b
 instance (Lattice a) => Monoid (Join a) where
     mempty = Join bottom
+
+instance (CountyLattice a) => Semigroup (LatticeSum a) where
+    LatticeSum a <> LatticeSum b = LatticeSum $ addCounty a b
+instance (CountyLattice a) => Monoid (LatticeSum a) where
+    mempty = LatticeSum $ bottom
 
 newtype DNF a = DNF { getDisjunctions :: Set (Set a) } deriving (Eq, Ord, Show)
 
@@ -79,6 +85,9 @@ instance (Lattice t) => Lattice (OolAble t) where
     top = OolAble top top
     meet (OolAble x1 x2) (OolAble y1 y2) = OolAble (meet x1 y1) (meet x1 y2 `join` meet x2 y1 `join` meet x2 y2)
     join (OolAble x1 x2) (OolAble y1 y2) = OolAble (join x1 y1) $ x1 `join` x2 `join` y1 `join` y2
+
+instance (Lattice t) => OoLattice (OolAble t) where
+    ool = OolAble bottom top
 
 class Lattice a => EqLattice a where
     equiv :: a -> a -> Bool
@@ -131,6 +140,8 @@ instance (Lattice t) => Lattice (Count t) where
     join (CountyValue (a:as) x) y'@(CountyValue [] y) = (a `join` y) `andThen` (CountyValue as x `join` y')
     join x'@(CountyValue [] x) (CountyValue (b:bs) y) = (x `join` b) `andThen` (x' `join` CountyValue bs y)
     join (CountyValue (a:as) x) (CountyValue (b:bs) y) = (a `join` b) `andThen` (CountyValue as x `join` CountyValue bs y)
+instance (OoLattice t) => OoLattice (Count t) where
+    ool = CountyValue [] ool
 
 andThen :: t -> (Count t) -> (Count t)
 andThen a (CountyValue b c) = CountyValue (a:b) c
@@ -193,12 +204,16 @@ instance (Lattice t) => Lattice (LogicValue t Truthy) where
     bottom = LogicTruthyValue bottom
     LogicTruthyValue x `meet` LogicTruthyValue y = LogicTruthyValue $ x `meet` y
     LogicTruthyValue x `join` LogicTruthyValue y = LogicTruthyValue $ x `join` y
+instance (OoLattice t) => OoLattice (LogicValue t Truthy) where
+    ool = LogicTruthyValue ool
 
 instance (Lattice t) => Lattice (LogicValue t County) where
     top = LogicCountyValue top
     bottom = LogicCountyValue bottom
     LogicCountyValue x `meet` LogicCountyValue y = LogicCountyValue $ x `meet` y
     LogicCountyValue x `join` LogicCountyValue y = LogicCountyValue $ x `join` y
+instance (OoLattice t) => OoLattice (LogicValue t County) where
+    ool = LogicCountyValue ool
 
 instance (Lattice t) => CountyLattice (LogicValue t County) where
     fromNumber n = LogicCountyValue $ fromNumber n

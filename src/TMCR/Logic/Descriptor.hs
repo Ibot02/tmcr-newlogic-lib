@@ -186,11 +186,11 @@ data DescriptorRule' (effs :: [DescriptorRuleEff]) (t :: DescriptorType) v where
     AtLeast :: DescriptorRule' effs County v -> Nteger -> DescriptorRule' effs Truthy v
     Exist :: (HasEff QuantifiedEff effs) => Relation -> v -> DescriptorRule' effs Truthy (Maybe v) -> DescriptorRule' effs Truthy v
     Count :: (HasEff QuantifiedEff effs) => Relation -> v -> DescriptorRule' effs Truthy (Maybe v) -> DescriptorRule' effs County v
-    Min :: [DescriptorRule' effs t v] -> DescriptorRule' effs t v
-    Max :: [DescriptorRule' effs t v] -> DescriptorRule' effs t v
+    Min :: SDescriptorType t -> [DescriptorRule' effs t v] -> DescriptorRule' effs t v
+    Max :: SDescriptorType t -> [DescriptorRule' effs t v] -> DescriptorRule' effs t v
     Cast :: DescriptorRule' effs Truthy v -> DescriptorRule' effs County v -- truth -> infinity, false -> 0
-    PriorState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
-    PostState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
+    --PriorState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
+    --PostState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
     Consume :: (HasEff ConsumeyEff effs) => ConsumeUUID -> Name -> [v] -> DescriptorRule' effs t v -> DescriptorRule' effs t v
 
 data DescriptorRuleF (effs :: [DescriptorRuleEff]) (t :: DescriptorType) (v :: Type) (f :: DescriptorType -> Type -> Type) where
@@ -203,11 +203,11 @@ data DescriptorRuleF (effs :: [DescriptorRuleEff]) (t :: DescriptorType) (v :: T
     AtLeastF :: f County v -> Nteger -> DescriptorRuleF effs Truthy v f
     ExistF :: (HasEff QuantifiedEff effs) => Relation -> v -> f Truthy (Maybe v) -> DescriptorRuleF effs Truthy v f
     CountF :: (HasEff QuantifiedEff effs) => Relation -> v -> f Truthy (Maybe v) -> DescriptorRuleF effs County v f
-    MinF :: [f t v] -> DescriptorRuleF effs t v f
-    MaxF :: [f t v] -> DescriptorRuleF effs t v f
+    MinF :: SDescriptorType t -> [f t v] -> DescriptorRuleF effs t v f
+    MaxF :: SDescriptorType t -> [f t v] -> DescriptorRuleF effs t v f
     CastF :: f Truthy v -> DescriptorRuleF effs County v f
-    PriorStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
-    PostStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
+    --PriorStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
+    --PostStateF :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRuleF effs Truthy v f
     ConsumeF :: (HasEff ConsumeyEff effs) => ConsumeUUID -> Name -> [v] -> f t v -> DescriptorRuleF effs t v f
 
 deriving instance (Show v) => Show (DescriptorRule' effs t v)
@@ -257,11 +257,11 @@ embedDR (SumF rs) = Sum rs
 embedDR (AtLeastF r n) = AtLeast r n
 embedDR (ExistF rel v r) = Exist rel v r
 embedDR (CountF rel v r) = Count rel v r
-embedDR (MinF rs) = Min rs
-embedDR (MaxF rs) = Max rs
+embedDR (MinF t rs) = Min t rs
+embedDR (MaxF t rs) = Max t rs
 embedDR (CastF r) = Cast r
-embedDR (PriorStateF s) = PriorState s
-embedDR (PostStateF s) = PostState s
+--embedDR (PriorStateF s) = PriorState s
+--embedDR (PostStateF s) = PostState s
 embedDR (ConsumeF c n vs r) = Consume c n vs r
 projectDR :: DescriptorRule' effs t v -> DescriptorRuleF effs t v (DescriptorRule' effs)
 projectDR (Constant l) = ConstantF l
@@ -273,11 +273,11 @@ projectDR (Sum rs) = SumF rs
 projectDR (AtLeast r n) = AtLeastF r n
 projectDR (Exist rel v r) = ExistF rel v r
 projectDR (Count rel v r) = CountF rel v r
-projectDR (Min rs) = MinF rs
-projectDR (Max rs) = MaxF rs
+projectDR (Min t rs) = MinF t rs
+projectDR (Max t rs) = MaxF t rs
 projectDR (Cast r) = CastF r
-projectDR (PriorState s) = PriorStateF s
-projectDR (PostState s) = PostStateF s
+--projectDR (PriorState s) = PriorStateF s
+--projectDR (PostState s) = PostStateF s
 projectDR (Consume c n vs r) = ConsumeF c n vs r
 {-
 traverseDR :: (Monad m) => (forall t v. res t v -> m (res' t v)) -> DescriptorRuleF effs t v res -> m (DescriptorRuleF effs t v res')
@@ -297,9 +297,6 @@ traverseDR f (PriorStateF s) = PriorState s
 traverseDR f (PostStateF s) = PostState s
 traverseDR f (ConsumeF c n vs r) = Consume c n vs r
 -}
-
-typeof :: DescriptorRule' effs t v -> SDescriptorType t
-typeof = undefined
 
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 

@@ -83,8 +83,8 @@ data UntypedDescriptorRule' =
     | UTCount VarName Relation Value UntypedDescriptorRule
     | UTMin [UntypedDescriptorRule]
     | UTMax [UntypedDescriptorRule]
-    | UTPriorState [StateBody Value]
-    | UTPostState [StateBody Value]
+    -- | UTPriorState [StateBody Value]
+    -- | UTPostState [StateBody Value]
     | UTConsume ConsumeUUID Name [Value] UntypedDescriptorRule
 
 data UntypedLiteral =
@@ -186,16 +186,16 @@ typecheck' parseVar c (UntypedDescriptorRule pos (UTCount vname rel val r)) SCou
     return $ Count rel val' r'
 typecheck' parseVar c (UntypedDescriptorRule pos (UTMin rs)) s = do
     rs' <- traverse (flip (typecheck' parseVar c) s) rs
-    return $ Min rs'
+    return $ Min s rs'
 typecheck' parseVar c (UntypedDescriptorRule pos (UTMax rs)) s = do
     rs' <- traverse (flip (typecheck' parseVar c) s) rs
-    return $ Max rs'
-typecheck' parseVar c (UntypedDescriptorRule pos (UTPriorState st)) s = do
-    st' <- traverse (traverse (parseVal (parseVar pos) c)) st
-    return $ castIfNeccessary s $ PriorState st'
-typecheck' parseVar c (UntypedDescriptorRule pos (UTPostState st)) s = do
-    st' <- traverse (traverse (parseVal (parseVar pos) c)) st
-    return $ castIfNeccessary s $ PostState st'
+    return $ Max s rs'
+-- typecheck' parseVar c (UntypedDescriptorRule pos (UTPriorState st)) s = do
+    -- st' <- traverse (traverse (parseVal (parseVar pos) c)) st
+    -- return $ castIfNeccessary s $ PriorState st'
+-- typecheck' parseVar c (UntypedDescriptorRule pos (UTPostState st)) s = do
+    -- st' <- traverse (traverse (parseVal (parseVar pos) c)) st
+    -- return $ castIfNeccessary s $ PostState st'
 typecheck' parseVar c (UntypedDescriptorRule pos (UTConsume uuid name args rule')) s = do
     r' <- typecheck' parseVar c rule' s
     (argScopes, t) <- fromDecl name DefaultRole
@@ -268,9 +268,9 @@ parseRule' = parseRule'' <* MPL.symbol sc "." where
         MPL.symbol sc ":"
         p <- stateOffset <$> getParserState
         return $ \rule -> UntypedDescriptorRule p $ f name rel v rule
-    statey = do
+    statey = mzero{-do
         f <- (UTPriorState <$ MPL.symbol sc "?") <|> (UTPostState <$ MPL.symbol sc "!")
-        f <$> stateyBody
+        f <$> stateyBody-}
     stateyBody = MP.between (MPL.symbol sc "[") (MPL.symbol sc "]") $ flip MP.sepBy1 (MPL.symbol sc ",") $ do
         f <- option IsSet $ IsNotSet <$ (MPL.symbol sc "~" <|> MPL.symbol sc "¬")
         f <$> parseValue

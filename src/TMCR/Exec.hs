@@ -29,7 +29,7 @@ import Data.Set (Set)
 import TMCR.Shuffler (ShuffleDependency (..), ShuffleDependencyWithValue(..), ShuffleDependent(..), ShuffleProgress (..), updateLocal', Definitions, defaultEval, MonadEval (..), Eval, Update (..), definedLogicNodes, definedDescriptorType, truthyDescriptors, countyDescriptors, UpdateContext, ReadEval (runReadEval), forgetValue, UpdateT(..), getDefinitions, initialShufflesProgress, computeAccess)
 import TMCR.Logic.Graphs (Bipartite, bipSetEdgesTo, bipGetEdgesFrom, taggedGetNodes)
 import TMCR.Logic.Shuffle (ShufflesProgress(..), Condition (..), getByCondition'', RandomSeed(), ShuffleKey(..), ShuffleStepIdent, ShuffleValue'', ShuffleName, MonadEvalShuffle(..), stepShuffle', shuffleKeyName)
-import TMCR.Logic.Algebra (Lattice (..), CompLattice, LogicValues, CountyLattice (..), cast, Join (..))
+import TMCR.Logic.Algebra (Lattice (..), LogicValues, CountyLattice (..), cast, Join (..))
 import Control.Monad
 import Data.Foldable (Foldable(..))
 import Data.Bool (bool)

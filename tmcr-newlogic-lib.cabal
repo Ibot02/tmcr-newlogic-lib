@@ -25,6 +25,7 @@ library
       TMCR.Logic.Data
       TMCR.Logic.Algebra
       TMCR.Parser.Common
+      TMCR.Parser.Logic
       TMCR.Parser.Data
       TMCR.Parser.Shuffle
       TMCR.Parser.Descriptor
