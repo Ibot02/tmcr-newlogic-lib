@@ -155,6 +155,7 @@ type Eval m v = forall t. DescriptorRule' t Thingy -> m (v t)
 
 data Eval' m v f x = Eval' {
     evalIsEq :: x -> x -> m (v Truthy)
+  , evalConstant :: forall t'. Literal t' -> m (v t')
   , evalCall :: forall t'. DescriptorIdent t' -> [Thingy] -> m (v t')
   , evalCanAccess :: forall t'. DescriptorIdent t' -> [Thingy] -> [StateBody Thingy] -> m (v t')
   , evalQuantify :: Relation -> Thingy -> m (f Thingy)
@@ -167,10 +168,7 @@ data Eval' m v f x = Eval' {
 basicEval' :: forall m f v. (Monad m, Traversable f, LogicValues (v Truthy) (v County), OoLattice (v Truthy)) => Eval' m v f Thingy -> Eval m v
 basicEval' Eval' {..} = eval where
   eval :: forall t'. DescriptorRule' t' Thingy -> m (v t')
-  eval (Constant (TruthyLiteral OolTrue)) = return $ top
-  eval (Constant (TruthyLiteral OolOol)) = return $ ool
-  eval (Constant (TruthyLiteral OolFalse)) = return $ bottom
-  eval (Constant (CountyLiteral n)) = return $ fromNteger n
+  eval (Constant literal) = evalConstant literal
   eval (IsEqual a b) = evalIsEq a b
   eval (CallDescriptor STruthy name args) = evalCall (TruthyDescriptorIdent name) args
   eval (CallDescriptor SCounty name args) = evalCall (CountyDescriptorIdent name) args
@@ -493,6 +491,9 @@ instance (Lattice t, Ord a) => Lattice (Consuming a t) where
     top = liftConsuming top
     bottom = liftConsuming bottom
 
+instance (OoLattice t, Ord a) => OoLattice (Consuming a t) where
+    ool = liftConsuming ool
+
 canonicalizeConsuming :: (Ord a, EqLattice t) => Consuming a t -> Consuming a t
 canonicalizeConsuming = Consuming . M.foldlWithKey' f mempty . getConsuming where
         f acc key (!value) = if | supplanted acc key value -> acc
@@ -516,8 +517,13 @@ instance (EqLattice t) => EqLattice (Stateful t) where
         Nothing -> False
 
 defaultEval :: (v ~ (LogicValue (Consuming LockIdent (OolAble t))), Monad m, LogicValues (v Truthy) (v County), OoLattice (v Truthy), MonadEval (v Truthy) (v County) m) => Eval m v
-defaultEval = basicEval' $ Eval' isEq askDescriptor (\ident args _state -> askAccess ident args) quantify exists count consume where
+defaultEval = basicEval' $ Eval' isEq fromConstant askDescriptor (\ident args _state -> askAccess ident args) quantify exists count consume where
   isEq a b = return $ if a == b then top else bottom
+  fromConstant :: (Applicative m, OoLattice (v Truthy), CountyLattice (v County)) => Literal t -> m (v t)
+  fromConstant (TruthyLiteral OolTrue) = pure $ top
+  fromConstant (TruthyLiteral OolOol) = pure $ ool
+  fromConstant (TruthyLiteral OolFalse) = pure $ bottom
+  fromConstant (CountyLiteral n) = pure $ fromNteger n
   quantify rel x = fmap CountedList $ askShuffle rel x
   exists ts = return $ getJoin $ foldMap Join ts
   count ts = return $ getLatticeSum $ foldMap (\(a,n) -> LatticeSum $ meet (fromNteger n) $ cast a) $ getCountedList ts
