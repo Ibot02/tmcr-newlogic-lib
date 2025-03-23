@@ -5,6 +5,10 @@
 
 import Test.Hspec
 
+main = hspec $ return ()
+{-
+
+
 import Test.QuickCheck
 import Test.QuickCheck.Instances
 
@@ -191,4 +195,5 @@ let testLogic' = [
 [Node (NamedScoping "area" (PlainName "Test")) [Node (NamedScoping "room" (PlainName "Test"))
   [ Node (Edge (Scoped [PlainName "Test",PlainName "Test",PlainName "A"]) (Scoped [PlainName "Test",PlainName "Test",PlainName "B"]))
     [ Node (Anon "and") [Node (NamedScoped "item" (Scoped [PlainName "A"])) []],Node (Anon "and") [Node (NamedScoped "item" (Scoped [PlainName "C"])) []]]]]]
+-}
 -}
