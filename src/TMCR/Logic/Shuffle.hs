@@ -14,6 +14,8 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 module TMCR.Logic.Shuffle where
 
 import TMCR.Logic.Common
@@ -53,6 +55,8 @@ import GHC.Generics (Generic)
 import Data.Hashable (Hashable)
 
 import Data.Void
+import TMCR.Logic.Descriptor (Relation)
+import Control.Concurrent.STM (TVar)
 
 data ShuffleInstruction =
       ShuffleDataLookup DataLookup
@@ -96,13 +100,6 @@ data SetSpec = SetSpec (M.Map PossiblyScopedName Nteger)
 
 type ShuffleName = Text
 
-{-data ShuffleValue = ShuffleValue {
-          mainPart :: ShuffleValue' ShuffleInstruction
-        , expansions :: [ShuffleValue' ShuffleInstruction]
-    } deriving (Eq, Ord, Show)
-    -}
---type ShuffleValue = ShuffleValue' ShuffleInstruction
-
 data ShuffleValue' a = Progress (Thingy, Thingy) (ShuffleValue' a)
                      | Delay (ShuffleValue' a)
                      | Remaining a
@@ -121,57 +118,7 @@ instance Monad ShuffleValue' where
     Loop xs >>= _ = Loop xs
     End >>= _ = End
 
-{-
-getAllPartial' :: ShuffleValue -> (Bool, Thingy) -> [(Thingy, Nteger)]
-getAllPartial' x (isForwards, y) = go x M.empty where
-    go (Remaining _) m = M.toList m
-    go (Progress x v) m | cond x = go v $ M.adjust increment (extr x) m
-                        | otherwise = go v m
-    go (Delay x) m = go x m
-    go (Loop xs) m = M.toList $ M.union (M.fromList $ fmap ((flip (,) Infinite) . extr) $ filter cond xs) m
-    go End m = M.toList m
-    cond (a,b) = if isForwards then a == y else b == y
-    extr (a,b) = if isForwards then b else a
-    increment (Finite !x) = Finite $ x + 1
-    increment Infinite = Infinite
--}
-
 type RandomSeed = StdGen
-
-{-
-data ShuffleStepResult = Final ShuffleValue
-                       | Success (ShuffleValue, RandomSeed)
-                       | DependsShuffle [(ShuffleName, Bool)]
--}
-
--- step :: M.Map (ShuffleName, Bool) (ShuffleValue' ShuffleInstruction, Maybe RandomSeed) -> (ShuffleName, Bool) -> ShuffleStepResult
--- step m name = case M.lookup name m of
---     Nothing -> Final $ End
---     Just (x, Nothing) -> Final x
---     Just (x, Just r) -> (\case
---         Left deps -> DependsShuffle deps
---         Right (res, r') -> Success (join res, r')) $ runExcept $ flip runStateT r $ for x $ \case
---             ShuffleDataLookup x -> return $ valFromList $ evalDataLookup x
---             ShuffleSetSpec x -> return $ evalSetSpec x
---             ShuffleCountLiteral Infinite -> return $ Loop [(Global "", Global "")]
---             ShuffleCountLiteral (Finite n) -> return $ valFromList $ replicate n (Global "", Global "")
---             ShufflePlaceholder -> _
---             ShuffleCall name -> _
-    -- | ShuffleReverse ShuffleInstruction -- from
-    -- | ShuffleRepeat ShuffleInstruction
-    -- | ShuffleRepeatIndividually ShuffleInstruction
-    -- | ShuffleMap ShuffleInstruction ShuffleInstruction [ShuffleInstruction]
-    -- | ShuffleConnect ShuffleInstruction ShuffleInstruction
-    -- | ShuffleUnion ShuffleInstruction ShuffleInstruction
-    -- | ShuffleThen ShuffleInstruction ShuffleInstruction
-    -- | ShuffleMatch SetSpec ShuffleInstruction [(SetSpec, ShuffleInstruction)]
-
-        
-{-
-valFromList :: [(Thingy, Thingy)] -> ShuffleValue
-valFromList [] = End
-valFromList (x:xs) = Progress x $ valFromList xs
--}
 
 evalSetSpec :: SetSpec -> [(Thingy, Nteger, Thingy)]
 evalSetSpec (SetSpec m) = fmap (\(v, n) -> (Global "", n, v)) $ M.toList m
@@ -188,8 +135,7 @@ shuffleKeyName (ShuffleKeyExtensions name) = name
 instance Hashable ShuffleKey
 type ShuffleStepIdent = (ShuffleKey, Int)
 
-data ShufflesProgress = ShufflesProgress {
-                          _currentLatest :: M.Map (ShuffleKey) ([ShuffleStepIdent], Int)
+data ShufflesProgress = ShufflesProgress { _currentLatest :: M.Map (ShuffleKey) ([ShuffleStepIdent], Int)
                         , _current :: M.Map ShuffleStepIdent ShuffleValue''
                         }
                     deriving (Eq, Show)
@@ -450,12 +396,6 @@ makeUnion [] = ShuffleEvalConst []
 makeUnion [x] = x
 makeUnion (x:xs) = ShuffleEvalUnion x $ makeUnion xs
 
-{-
-
-    | ShuffleEvalMap ShuffleEval ShuffleEval [ShuffleEval]
-    | ShuffleEvalMatch SetSpec ShuffleEval [(SetSpec, ShuffleEval)]
--}
-
 getNextStep :: ShuffleName -> ShufflesProgress -> Maybe ShuffleStepIdent
 getNextStep name progress = M.lookup (ShuffleKeyMain name) (progress ^. currentLatest) >>= \case
             ([], _) -> Nothing
@@ -509,3 +449,33 @@ getPartialM name = fmap (\((a,b),n) -> (a,n,b)) <$> getByConditionM name All
 addNteger :: Nteger -> Nteger -> Nteger
 addNteger (Finite n) (Finite m) = Finite (n + m)
 addNteger _ _ = Infinite
+
+
+
+
+
+---
+
+
+class (Monad m) => MonadShufflesExec i m | m -> i where
+    requireRel :: Relation ->  Thingy -> m ()
+    getTodos :: m [([Thingy], i, [Thingy])]
+    set :: Maybe Thingy -> i -> Maybe Thingy -> m [(Maybe Thingy, Nteger, ShuffleName, Maybe Thingy)]
+    get :: m (M.Map ShuffleName [(Thingy, Nteger, Thingy)])
+
+newtype InteractiveShufflesT m a = InteractiveShufflesT { runInteractiveShufflesT :: ReaderT InteractiveShufflesProgress m a } deriving (Functor, Applicative, Monad, MonadReader InteractiveShufflesProgress, MonadTrans)
+
+data InteractiveShufflesProgress = InteractiveShufflesProgress {
+      definitions :: M.Map ShuffleName (ShuffleInstruction, [ShuffleInstruction])
+    , goals :: TVar [(Relation, Thingy)]
+    , constraints :: TVar [(Thingy, ShuffleStepIdent, Thingy)]
+    , results :: TVar [(Thingy, ShuffleStepIdent, Thingy)]
+    } deriving (Eq)
+
+
+{-
+
+bipartite matching
+general matching
+
+-}

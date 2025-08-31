@@ -18,6 +18,7 @@ library
       TMCR.TestData
       TMCR.Logic.Descriptor
       TMCR.Logic.Shuffle
+      TMCR.Logic.NewShuffle
       TMCR.Logic.Common
       TMCR.Logic.Logic
       TMCR.Logic.Merge
@@ -33,6 +34,7 @@ library
       TMCR.IO
       TMCR.Shuffler
       TMCR.Exec
+      TMCR.Exec.Internal
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:

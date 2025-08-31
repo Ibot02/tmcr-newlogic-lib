@@ -62,8 +62,8 @@ type Parser = ParserC ()
 parseShuffleInstruction :: Parser ShuffleInstruction
 parseShuffleInstruction = makeExprParser terms ops where
     terms = parseShuffleDataLookup <|> parseShuffleSetSpec <|> parseShuffleCountLiteral <|> parseShufflePlaceholder <|> parseShuffleCall <|> parseShuffleMatch <|> parseShuffleMap <|> between (MPL.symbol sc "(") (MPL.symbol sc ")") parseShuffleInstruction
-    ops = [ [ binUnion ]
-          , [ binThen ]
+    ops = [ [ binUnion ], --todo: maybe reintroduce later
+            [ binThen ]
           , [ prefixRepeats, prefixReverse ]
           , [ binConnect ]
           ]
