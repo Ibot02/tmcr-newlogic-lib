@@ -68,6 +68,8 @@ import Data.Functor.Classes
 import Data.Either (isRight)
 
 import System.Random (initStdGen)
+import GHC.IO (unsafeInterleaveIO)
+import System.Directory (canonicalizePath)
 
 #ifndef MIN_VERSION_yaml
 type ParseException = String
@@ -135,14 +137,14 @@ inSubdir' name a = do
     let xs' = filter (\x -> matches name (fst x) && snd x) xs
     forM xs' $ \(x,_) -> inSubdir x (a x)
 
-
 readDirectoryFull :: FilePath -> IO Directory
 readDirectoryFull path = Sys.withCurrentDirectory path $ do
     dir <- Sys.listDirectory "."
     contents <- forM dir $ \path -> do
+        path' <- canonicalizePath path
         isDir <- Sys.doesDirectoryExist path
         if isDir then do
-            contents <- readDirectoryFull path
+            contents <- unsafeInterleaveIO $ readDirectoryFull path'
             return (path, Right contents)
         else do
             contents <- BL.readFile path

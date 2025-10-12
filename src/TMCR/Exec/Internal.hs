@@ -47,7 +47,7 @@ import Control.Monad.Trans.Writer (WriterT, execWriterT)
 
 import qualified DeferredFolds.UnfoldlM as DF
 
-type TransactionalShuffleProgress t c = TransactionalShuffleProgress TransactionalShufflesProgress t c
+type TransactionalShuffleProgress t c = TransactionalShuffleProgress' TransactionalShufflesProgress t c
 
 data TransactionalShuffleProgress' s t c = TransactionalShuffleProgress {
       _tShuffles :: s
@@ -224,7 +224,7 @@ checkDependencyUnchanged progress (LogicNodeDependencyWithValue name old) = do
   new <- runReaderT (runTReadEval (askLogicNodeAccess name)) progress
   check $ old == new
 
-type TReadEval v m a = TReadEval' TransactionalShufflesProgress v m a
+type TReadEval = TReadEval' TransactionalShufflesProgress
 newtype TReadEval' s v m a = TReadEval { runTReadEval :: ReaderT (TransactionalShuffleProgress' s (v Truthy) (v County)) m a } deriving newtype (Functor, Applicative, Monad, MonadReader (TransactionalShuffleProgress (v Truthy) (v County)), MonadTrans)
 
 instance (LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v County) (TReadEval v STM) where

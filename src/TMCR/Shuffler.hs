@@ -29,6 +29,7 @@ module TMCR.Shuffler where
 
 import TMCR.Logic.Descriptor
 import TMCR.Logic.Shuffle
+import TMCR.Logic.NewShuffle
 import TMCR.Logic.Common
 import TMCR.Logic.Logic (ScopedName, LogicNodeName)
 import TMCR.Module
@@ -536,3 +537,9 @@ newtype CountedList a = CountedList { getCountedList :: [(a, Nteger)] } deriving
     evalDeferConsumer (uuid, bindings, TruthyDescriptorIdent name, args) = return $ LogicTruthyValue $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent uuid bindings name args), top)
     evalDeferConsumer (uuid, bindings, CountyDescriptorIdent name, args) = return $ LogicCountyValue $ liftCount $ Consuming $ uncurry M.singleton $ (S.singleton (LockIdent uuid bindings name args), top)
 -}
+
+
+
+instance NewShuffleProgress (ShuffleProgress t c) Identity Thingy where 
+    inform = undefined
+    check = undefined

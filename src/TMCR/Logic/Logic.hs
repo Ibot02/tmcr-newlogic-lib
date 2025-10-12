@@ -55,6 +55,16 @@ data ScopedName = Global Name
 
 instance Hashable ScopedName where
 
+displayScopedName :: ScopedName -> Text
+displayScopedName (Global n) = "g" <> displayLogicName n
+displayScopedName (Scoped ns) = T.intercalate "." $ fmap displayLogicName ns
+displayScopedName FullWildcard = "**"
+
+displayLogicName :: Name -> Text
+displayLogicName (PlainName name) = name
+displayLogicName (QuotedName name) = T.pack $ show name
+displayLogicName Wildcard = "*"
+
 data Mode = ModeDefault --select or new
           | ModeAppend
           | ModeReplace

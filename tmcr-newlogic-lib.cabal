@@ -17,6 +17,7 @@ library
       TMCR.Module
       TMCR.TestData
       TMCR.Logic.Descriptor
+      TMCR.Logic.DescriptorTranslation
       TMCR.Logic.Shuffle
       TMCR.Logic.NewShuffle
       TMCR.Logic.Common
@@ -32,6 +33,8 @@ library
       TMCR.Parser.Descriptor
       TMCR.Module.Dependency
       TMCR.IO
+      TMCR.IO.EvalDescriptor
+      TMCR.Tests
       TMCR.Shuffler
       TMCR.Exec
       TMCR.Exec.Internal
@@ -64,6 +67,8 @@ library
     , async
     , random
     , deferred-folds
+    , process
+    , temporary
   if !impl(ghcjs)
     build-depends:
       yaml
