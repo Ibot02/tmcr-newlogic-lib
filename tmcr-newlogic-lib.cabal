@@ -17,6 +17,7 @@ library
       TMCR.Module
       TMCR.TestData
       TMCR.Logic.Descriptor
+      TMCR.Logic.Eval
       TMCR.Logic.DescriptorTranslation
       TMCR.Logic.Shuffle
       TMCR.Logic.NewShuffle
@@ -44,7 +45,9 @@ library
       src/
   build-depends:
       base
+    , array
     , containers
+    , monoidal-containers
     , lens
     , text
     , megaparsec
@@ -52,6 +55,7 @@ library
     , mtl
     , transformers
     , aeson
+    , aeson-pretty
     , bytestring
     , dependent-map
     , dependent-sum

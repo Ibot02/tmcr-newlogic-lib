@@ -1,4 +1,4 @@
-module TMCR.Logic.Graphs (Bipartite, bipSetEdgesTo, bipGetEdgesFrom, TaggedGraph, taggedGetEdgesTo, taggedGetEdgesFrom, taggedEdge, taggedGetNodes) where
+module TMCR.Logic.Graphs (Bipartite, bipSetEdgesTo, bipGetEdgesFrom, TaggedGraph, taggedGetEdgesTo, taggedGetEdgesFrom, taggedEdge, taggedGetNodes, taggedGetEdges) where
 
 import Algebra.Graph
 import qualified Algebra.Graph.Bipartite.AdjacencyMap as Bip
@@ -28,3 +28,6 @@ taggedEdge t src dst = src -< t >- dst
 
 taggedGetNodes :: (Ord a) => TaggedGraph t a -> Set a
 taggedGetNodes = Labelled.vertexSet
+
+taggedGetEdges :: (Eq t, Ord n, Monoid t) => TaggedGraph t n -> [(n, t, n)]
+taggedGetEdges = fmap (\(t, node1, node2) -> (node1, t, node2)) . Labelled.edgeList

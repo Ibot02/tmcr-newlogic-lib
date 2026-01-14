@@ -53,7 +53,7 @@ import TMCR.Parser.Logic ( logicParser )
 import TMCR.Logic.Data (LogicData')
 import TMCR.Logic.Shuffle (RandomSeed())
 import TMCR.Parser.Shuffle (parseShuffleInstruction, parseShuffleStatements)
-import Data.Aeson (decode)
+import Data.Aeson (decode, eitherDecode)
 #ifdef MIN_VERSION_yaml
 import Data.Yaml (decodeEither, ParseException, decodeEither')
 #else
@@ -287,13 +287,13 @@ execInBaseDir path a = resourceToIOFinal $ bracket (embedFinal getCurrentDirecto
 -}
 
 readGameDefStrErr :: (Members '[Reader Scopes, Error Text, WithDirectory] r) => [FilePath] -> Sem r GameDef
-readGameDefStrErr sources = joinErrorTextPrefix @ParseException "ParseException: " $ joinErrorTextPrefix @MergeError "Merge Error: " $ joinErrorTextPrefix @AssertionFailed "Assertion Failed: " $ joinError @(ParseErrorBundle Text Void) @Text (T.pack . errorBundlePretty) $ readGameDef sources where
+readGameDefStrErr sources = joinErrorTextPrefix @ParseException "ParseException: " $ joinErrorTextPrefix @MergeError "Merge Error: " $ joinErrorTextPrefix @AssertionFailed "Assertion Failed: " $ joinError @(ParseErrorBundle Text Void) @Text (T.pack . errorBundlePretty) $ joinError @String (("Logic Data parsing error:\n" <>) . T.pack) $ readGameDef sources where
     joinError :: forall e e' r a. (Member (Error e') r) => (e -> e') -> Sem (Error e ': r) a -> Sem r a
     joinError convert k = runError @e k >>= (either (throw . convert) return)
     joinErrorTextPrefix :: forall e r a. (Member (Error Text) r, Show e) => Text -> Sem (Error e ': r) a -> Sem r a
     joinErrorTextPrefix pre k = joinError (\x -> pre <> T.pack (show x)) k
 
-readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
+readGameDef :: (Members '[Error ParseException, Error MergeError, WithDirectory, Reader Scopes, Error String, Error AssertionFailed, Error (ParseErrorBundle Text Void)] r) => [FilePath] -> Sem r GameDef
 readGameDef sources = evalState @Int 0 $ do
     xs <- fmap concat $ forM sources $ \path -> inSubdirs path $ \path -> do
         m <- readModule
@@ -367,7 +367,7 @@ instance (Member (Error MergeError) r, Member (Reader ModuleDependencyInfo) r) =
     dependencies = ask
     warningIgnoredLogicSubtree _ = return ()
 
-readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error (ParseErrorBundle Text Void), State Int] r) => ModuleContent -> Sem r ModuleFullContent
+readModuleFullContent :: (Members '[Reader Scopes, WithDirectory, Error String, Error (ParseErrorBundle Text Void), State Int] r) => ModuleContent -> Sem r ModuleFullContent
 readModuleFullContent content =
     runReader
         @DescriptorDeclarations
@@ -388,7 +388,7 @@ readModuleFullContent content =
                 runParserC (logicParser scopes) p (TE.decodeUtf8 $ BL.toStrict c)
         logicData <- fmap (concat . concat) $ forM (content ^. moduleContentData) $ \x -> do
             withPath (T.unpack x) $ \p c ->
-                return $ maybeToList $ decode @LogicData' c
+                either throw (return . (:[])) $ eitherDecode @LogicData' c
         shuffles <- fmap (concat . concat) $ forM (content ^. moduleContentShuffles) $ \x -> do
             withPath (T.unpack x) $ \p c ->
                 runReader @() () $

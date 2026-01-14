@@ -13,12 +13,14 @@ import qualified Data.Map as M
 import Data.IntMap (IntMap)
 import Data.Text (Text)
 import TMCR.Logic.Logic (Mode (..))
-import Data.Aeson (Value (..), Object, FromJSON (..), withObject, (.!=), (.:))
+import Data.Aeson (Value (..), Object, FromJSON (..), withObject, (.!=), (.:), ToJSON(..))
+import qualified Data.Aeson.KeyMap as AKM
 import Data.Aeson.Parser (decodeWith)
 import qualified Data.Text as T
 import Control.Lens (TraversableWithIndex(itraverse), FoldableWithIndex (ifoldMap), Traversal, _Right, _Left, _Just, coerced, at, Iso, filtered, (^..), Getting, LensLike, to, (^?))
 import Control.Applicative (Alternative(..), Const (..))
 import qualified Data.IntMap as IM
+import qualified Data.IntSet as IS
 import Data.Aeson.TH(deriveJSON, defaultOptions)
 import Text.Read (readMaybe)
 import Data.Foldable (Foldable(..))
@@ -36,6 +38,9 @@ import Data.Monoid (Endo)
 import Data.Maybe (fromMaybe)
 
 import Data.Functor.Identity (Identity(..))
+import Control.Arrow ((***))
+import Data.String (IsString(fromString))
+import GHC.IsList (fromList)
 
 
 
@@ -61,6 +66,15 @@ import Data.Functor.Identity (Identity(..))
 
 newtype LogicData = LogicData (Map Name (Either Text (IntMap LogicData))) deriving (Eq, Ord, Show)
 newtype LogicData' = LogicData' (Map Name (Either Text (Mode, IntMap (Maybe LogicData')))) deriving (Eq, Ord, Show)
+
+
+instance ToJSON LogicData where
+  toJSON (LogicData d) | M.null d = Null
+                       | otherwise = Object $ AKM.fromList $ ((fromString . T.unpack *** either String writeIntMap) <$> M.toList d) where
+    writeIntMap :: IntMap LogicData -> Value
+    writeIntMap i | IM.null i = Array $ fromList []
+                  | IS.findMin (IM.keysSet i) >= 0 && IS.findMax (IM.keysSet i) <= (IM.size i * 2) = Array $ fromList $ [maybe Null toJSON $ IM.lookup ix i | ix <- [0 .. IS.findMax (IM.keysSet i)]]
+                  | otherwise = Object $ AKM.fromList $ (((fromString . show) *** toJSON) <$> IM.toList i)
 
 data DataLookup = DataLookup {
       location :: [DataStep]

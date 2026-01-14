@@ -157,24 +157,24 @@ deriving instance Show (SDescriptorType t)
 deriving instance Eq (SDescriptorType t)
 deriving instance Ord (SDescriptorType t)
 
-type DescriptorRule t = DescriptorRule' t Value
+type DescriptorRule t = DescriptorRule' t VarName
 
 data DescriptorRule' (t :: DescriptorType) v where
     Constant :: Literal t -> DescriptorRule' t v
-    IsEqual :: v -> v -> DescriptorRule' Truthy v
-    CallDescriptor :: SDescriptorType t -> Name -> [v] -> DescriptorRule' t v
-    CanAccess :: SDescriptorType t -> Name -> [v] -> [StateBody v] -> DescriptorRule' t v
+    IsEqual :: Value' v -> Value' v -> DescriptorRule' Truthy v
+    CallDescriptor :: SDescriptorType t -> Name -> [Value' v] -> DescriptorRule' t v
+    CanAccess :: SDescriptorType t -> Name -> [Value' v] -> [StateBody (Value' v)] -> DescriptorRule' t v
     Scale :: DescriptorRule' County v -> Nteger -> DescriptorRule' County v
     Sum :: [DescriptorRule' County v] -> DescriptorRule' County v
     AtLeast :: DescriptorRule' County v -> Nteger -> DescriptorRule' Truthy v
-    Exist :: Relation -> v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' Truthy v
-    Count :: Relation -> v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' County v
+    Exist :: Relation -> Value' v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' Truthy v
+    Count :: Relation -> Value' v -> DescriptorRule' Truthy (Maybe v) -> DescriptorRule' County v
     Min :: SDescriptorType t -> [DescriptorRule' t v] -> DescriptorRule' t v
     Max :: SDescriptorType t -> [DescriptorRule' t v] -> DescriptorRule' t v
     Cast :: DescriptorRule' Truthy v -> DescriptorRule' County v -- truth -> infinity, false -> 0
     --PriorState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
     --PostState :: (HasEff StateyEff effs) => [StateBody v] -> DescriptorRule' effs Truthy v
-    Consume :: ConsumeUUID -> Name -> [v] -> DescriptorRule' t v -> DescriptorRule' t v
+    Consume :: ConsumeUUID -> Name -> [Value' v] -> DescriptorRule' t v -> DescriptorRule' t v
 
 deriving instance (Show v) => Show (DescriptorRule' t v)
 deriving instance (Eq v) => Eq (DescriptorRule' t v)
@@ -193,9 +193,11 @@ deriving instance Ord (Literal t)
 
 data Oolean = OolFalse | OolOol | OolTrue deriving (Eq, Ord, Show, Enum, Bounded)
 
-data Value = Variable VarName
-           | ConstantValue PossiblyScopedName
-                deriving (Eq, Ord, Show)
+type Value = Value' VarName
+
+data Value' v = Variable v
+              | ConstantValue PossiblyScopedName
+                deriving (Eq, Ord, Show, Functor)
 
 data StateBody v = IsSet v
                  | IsNotSet v
@@ -211,7 +213,7 @@ relationName (Backward rel) = rel
 
 data DescriptorRole = DefaultRole | Reachability deriving (Eq, Ord, Show, Enum, Bounded)
 
-$(makePrisms ''Value)
+$(makePrisms ''Value')
 
 type SomeDescriptorRule = Either (DescriptorRule Truthy) (DescriptorRule County)
 

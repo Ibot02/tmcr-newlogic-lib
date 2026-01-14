@@ -128,9 +128,9 @@ parseRule boundVars t cc = label "rule" $ do
             Truthy -> fmap (cc STruthy) $ typecheck boundVars untyped STruthy
             County -> fmap (cc SCounty) $ typecheck boundVars untyped SCounty
 
-typecheck :: [VarName] -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t Value)
+typecheck :: [VarName] -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t VarName)
 typecheck varNames = typecheck' (\pos v -> if v `elem` varNames then return (Variable v) else strErrorWithPos pos "") ConstantValue
-typecheck' :: (Int -> VarName -> Parser v) -> (PossiblyScopedName -> v) -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t v)
+typecheck' :: (Int -> VarName -> Parser (Value' v)) -> (PossiblyScopedName -> Value' v) -> UntypedDescriptorRule -> SDescriptorType t -> Parser (DescriptorRule' t v)
 typecheck' parseVar c (UntypedDescriptorRule _ (UTConstant (UTOolean b))) s = return $ castIfNeccessary s $ Constant $ TruthyLiteral b
 typecheck' parseVar c (UntypedDescriptorRule pos (UTConstant (UTNteger b))) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but Nteger (" <> show b <> ") is County."
 typecheck' parseVar c (UntypedDescriptorRule _ (UTConstant (UTNteger b))) SCounty = return $ Constant $ CountyLiteral b
@@ -175,14 +175,14 @@ typecheck' parseVar c (UntypedDescriptorRule pos (UTAtLeast r v)) s = do
     return $ castIfNeccessary s $ AtLeast r' v
 typecheck' parseVar c (UntypedDescriptorRule pos (UTExist vname rel val r)) s = do
     val' <- parseVal (parseVar pos) c val
-    let parseVar' = \pos v -> if v == vname then return Nothing else Just <$> parseVar pos v
-    r' <- typecheck' parseVar' (Just . c) r STruthy
+    let parseVar' = \pos v -> if v == vname then return (Variable Nothing) else fmap Just <$> parseVar pos v
+    r' <- typecheck' parseVar' (fmap Just <$> c) r STruthy
     return $ castIfNeccessary s $ Exist rel val' $ r'
 typecheck' parseVar c (UntypedDescriptorRule pos (UTCount vname rel val r)) STruthy = strErrorWithPos pos $ "Was expecting Truthy value, but count is County."
 typecheck' parseVar c (UntypedDescriptorRule pos (UTCount vname rel val r)) SCounty = do
     val' <- parseVal (parseVar pos) c val
-    let parseVar' = \pos v -> if v == vname then return Nothing else Just <$> parseVar pos v
-    r' <- typecheck' parseVar' (Just . c) r STruthy
+    let parseVar' = \pos v -> if v == vname then return (Variable Nothing) else fmap Just <$> parseVar pos v
+    r' <- typecheck' parseVar' (fmap Just <$> c) r STruthy
     return $ Count rel val' r'
 typecheck' parseVar c (UntypedDescriptorRule pos (UTMin rs)) s = do
     rs' <- traverse (flip (typecheck' parseVar c) s) rs

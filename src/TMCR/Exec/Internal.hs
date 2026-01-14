@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE InstanceSigs #-}
@@ -225,7 +226,7 @@ checkDependencyUnchanged progress (LogicNodeDependencyWithValue name old) = do
   check $ old == new
 
 type TReadEval = TReadEval' TransactionalShufflesProgress
-newtype TReadEval' s v m a = TReadEval { runTReadEval :: ReaderT (TransactionalShuffleProgress' s (v Truthy) (v County)) m a } deriving newtype (Functor, Applicative, Monad, MonadReader (TransactionalShuffleProgress (v Truthy) (v County)), MonadTrans)
+newtype TReadEval' s v m a = TReadEval { runTReadEval :: ReaderT (TransactionalShuffleProgress' s (v Truthy) (v County)) m a } deriving newtype (Functor, Applicative, Monad, MonadReader (TransactionalShuffleProgress' s (v Truthy) (v County)), MonadTrans)
 
 instance (LogicValues (v Truthy) (v County)) => MonadEval (v Truthy) (v County) (TReadEval v STM) where
   askDefinitions = view tDefinitions

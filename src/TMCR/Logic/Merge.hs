@@ -64,8 +64,6 @@ import qualified Data.Text as T
 import TMCR.Logic.Algebra (DNF(..), singleToDNF, Meet(..), Join(..))
 import Data.Either (partitionEithers)
 
-import Debug.Trace (traceShowId, traceShow)
-
 class Monad m => MonadMerge m where
     mergeDescDeclError :: DescriptorName -> [[ModuleIdentifier]] -> m a
     mergeSugarConflictError :: Text -> [[ModuleIdentifier]] -> m a
@@ -574,6 +572,7 @@ data DataMergeKey = TextValue Text Text
 
 mergeData :: (MonadMerge m) => Map ModuleIdentifier [LogicData'] -> m LogicData
 mergeData xs = (mergeRecursively f (const absurd) g . fmap (fmap Just)) xs >>= either errorLogicDataMergeConflict return where
+    f :: Maybe LogicData' -> [(L.Mode, Either DataMergeKey b, Maybe LogicData')]
     f (Just (LogicData' m)) = concatMap (\(t, e) -> case e of
         Left t' -> [(L.ModeReplace, Left (TextValue t t'), Nothing)]
         Right (mode, intMap) -> fmap (\(i,maybeLogicData) -> (mode, (Left (MapValue t i)), maybeLogicData)) $ IM.toList intMap
@@ -622,7 +621,7 @@ ensureSingleShuffleDefinition n (_:_:_) = errorGenericMergeError 12
 
 --totally wrong
 mergeShuffle' :: (MonadMerge m) => Map ModuleIdentifier [ShuffleStatement] -> m [ShuffleStatement]
-mergeShuffle' = resolveConflicts (return . concat . toList) . traceShowId . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList . traceShowId where
+mergeShuffle' = resolveConflicts (return . concat . toList) . concat . fmap (\(ident,xs) -> fmap (tag ident) xs) . M.toList where
     tag ident x@(DefineShuffle _ _) = (ident, L.ModeReplace, x)
     tag ident x@(ExpandShuffle _ _) = (ident, L.ModeAppend, x)
 

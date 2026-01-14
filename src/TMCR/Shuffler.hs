@@ -167,7 +167,7 @@ data Eval' m v f x = Eval' {
 
 
 basicEval' :: forall m f v. (Monad m, Traversable f, LogicValues (v Truthy) (v County), OoLattice (v Truthy)) => Eval' m v f Thingy -> Eval m v
-basicEval' Eval' {..} = eval where
+basicEval' Eval' {..} = undefined {-eval where
   eval :: forall t'. DescriptorRule' t' Thingy -> m (v t')
   eval (Constant literal) = evalConstant literal
   eval (IsEqual a b) = evalIsEq a b
@@ -194,6 +194,7 @@ basicEval' Eval' {..} = eval where
   --eval (PriorState s) = priorState s
   --eval (PostState s) = postState s
   eval (Consume uid name args rule') = evalConsume uid name args rule'
+  -}
 
 fromNteger :: (CountyLattice a) => Nteger -> a
 fromNteger Infinite = top
@@ -307,13 +308,16 @@ updateLogicNode' :: (Monad m, Eq (v Truthy)) => LogicNodeName -> [ShuffleDepende
 updateLogicNode' name deps value = tell $ tellUpdate $ [UpdateLogicNode name value, UpdateDependency deps (LogicNodeDependent name)]
 
 tryBind :: Value -> Thingy -> DescriptorRule t -> Maybe (DescriptorRule t)
+tryBind = undefined {-
 tryBind (ConstantValue v) v' | v == v' = Just
                              | otherwise = const Nothing
 tryBind (Variable var) val = Just . fmap (bind var val) where
   bind var val (Variable var') | var == var' = ConstantValue val
   bind _ _ x = x
+-}
 
 updateCountyDescriptor :: (MonadEval (v Truthy) (v County) m, Eq (v County), LogicValues (v Truthy) (v County)) => Eval (UpdateT v m) v -> (DescriptorName, [Thingy]) -> UpdateT v m ()
+updateCountyDescriptor eval (name, params) = undefined {-
 updateCountyDescriptor eval (name, params) = do
     (t, (_, deps)) <- listen $ do
                 ds <- viewDefinitions $ definedDescriptor (CountyDescriptorIdent name)
@@ -323,6 +327,7 @@ updateCountyDescriptor eval (name, params) = do
                       return $ eval $ fmap (assertNotFree name) rule'
                 return $  getJoin $ foldMap Join ts
     updateCountyDescriptor' (name, params) t deps
+-}
 
 assertNotFree :: DescriptorName -> Value -> Thingy
 assertNotFree _ (ConstantValue v) = v
@@ -332,6 +337,7 @@ updateCountyDescriptor' :: (Monad m, Eq (v County)) => (DescriptorName, [Thingy]
 updateCountyDescriptor' desc value deps = tell $ tellUpdate [UpdateCountyDescriptor desc value, UpdateDependency deps $ DescriptorDependent desc]
 
 updateTruthyDescriptor :: (MonadEval (v Truthy) (v County) m, Eq (v Truthy), LogicValues (v Truthy) (v County)) => Eval (UpdateT v m) v -> (DescriptorName, [Thingy]) -> UpdateT v m ()
+updateTruthyDescriptor eval (name, params) = undefined {-
 updateTruthyDescriptor eval (name, params) = do
     (t, (_, deps)) <- listen $ do
                 ds <- viewDefinitions $ definedDescriptor (TruthyDescriptorIdent name)
@@ -341,6 +347,7 @@ updateTruthyDescriptor eval (name, params) = do
                       return $ eval $ fmap (assertNotFree name) rule'
                 return $ getJoin $ foldMap Join ts
     updateTruthyDescriptor' (name, params) t deps
+-}
 
 updateTruthyDescriptor' :: (Monad m, Eq (v Truthy)) => (DescriptorName, [Thingy]) -> v Truthy -> [ShuffleDependencyWithValue v] -> UpdateT v m ()
 updateTruthyDescriptor' desc value deps = tell $ tellUpdate [UpdateTruthyDescriptor desc value, UpdateDependency deps $ DescriptorDependent desc]

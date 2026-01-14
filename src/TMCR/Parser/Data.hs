@@ -15,7 +15,7 @@ import qualified Data.Map as M
 import Data.IntMap (IntMap)
 import Data.Text (Text)
 import TMCR.Logic.Logic (Mode (..))
-import Data.Aeson (Value (..), Object, FromJSON (..), withObject, (.!=), (.:))
+import Data.Aeson (Value (..), Object, FromJSON (..), withObject, (.!=), (.:), Options (constructorTagModifier), camelTo2)
 import Data.Aeson.Parser (decodeWith)
 import qualified Data.Text as T
 import Control.Lens (TraversableWithIndex(itraverse), FoldableWithIndex (ifoldMap), Traversal, _Right, _Left, _Just, coerced, at, Iso, filtered, (^..), Getting, LensLike, to, (^?))
@@ -61,7 +61,7 @@ import Data.Functor.Identity (Identity(..))
 }}
 -}
 
-$(deriveJSON defaultOptions ''Mode)
+$(deriveJSON (defaultOptions {constructorTagModifier = camelTo2 '_' . drop (length ("Mode" :: String))}) ''Mode)
 
 instance FromJSON LogicData' where
     parseJSON = stepObj where

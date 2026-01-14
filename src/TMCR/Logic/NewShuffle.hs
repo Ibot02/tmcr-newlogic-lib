@@ -23,7 +23,10 @@ import qualified System.Random as R
 import Debug.Trace (trace)
 import TMCR.Logic.Data (DataLookup, LogicData, evalDataLookup)
 import TMCR.Logic.Common (Thingy)
+import Control.Monad.Trans.Maybe (MaybeT(runMaybeT, MaybeT))
+import Control.Monad.Trans (MonadTrans(lift))
 
+type ShuffleIdent = String
 
 data PoolSpec = FinitePoolSpec | ArbitraryPoolSpec --todo: both data-based
 
@@ -41,16 +44,17 @@ type NewShuffleName = String
 
 data Pair a = OrderedPair a a | UnorderedPair a a deriving (Functor, Show)
 
-newtype PartialShuffle a = PartialShuffle
-  { remaining :: [Pair a]
-  }
-
 data PartialShuffle' a = PartialShuffle'
   {
     known :: [Pair a]
   , remainingLeft :: [(a, Bool)]
   , remainingRight :: [a]
   } deriving (Eq, Show, Functor)
+
+data PartialShuffles a = PartialShuffles {
+      doneShuffles :: Map ShuffleIdent [Pair a]
+    , openShuffles :: [(ShuffleIdent, PartialShuffle' a)]
+    } deriving (Eq, Show, Functor)
 
 fromSpec'' :: (Monad m, Ord a) => (forall a. [a] -> m [a]) -> (DataLookup -> m [Pair a]) -> (PoolSpec -> m [a]) -> ShuffleSpec -> m (PartialShuffle' a)
 fromSpec'' shuf f g spec = fromSpec' shuf f g spec mempty mempty
@@ -83,21 +87,6 @@ getRights :: Pair a -> [a]
 getRights (OrderedPair _ a) = [a]
 getRights (UnorderedPair a b) = [a,b]
 
-fromSpec :: (Monad m, Ord a) => (forall a. [a] -> m [a]) -> (PoolSpec -> m [a]) -> ShuffleSpec -> m (PartialShuffle a)
-fromSpec shuf f (DataBasedSpec _) = return $ PartialShuffle [] --todo
-fromSpec shuf f (BipartiteSpec p p') = do
-    as <- f p
-    bs <- f p'
-    PartialShuffle <$> shuf [(OrderedPair a b) | a <- as, b <- bs]
-fromSpec shuf f (CommonSpec p) = do
-    as <- f p
-    PartialShuffle <$> shuf [(UnorderedPair a b) | a <- as, b <- as, a < b]
-fromSpec shuf f (AndThen s s') = do
-    PartialShuffle ps <- fromSpec shuf f s
-    PartialShuffle ps' <- fromSpec shuf f s'
-    return $ PartialShuffle $ ps <> ps'
-
-
 instance (Eq a) => Eq (Pair a) where
     OrderedPair a b == OrderedPair a' b' = a == a' && b == b'
     UnorderedPair a b == UnorderedPair a' b' = a == a' && b == b' || a == b' && b == a'
@@ -110,42 +99,33 @@ conflictsWith (UnorderedPair a b) (OrderedPair a' b') = a == a' || a == b' || b 
 conflictsWith (UnorderedPair a b) (UnorderedPair a' b') = a == a' || a == b' || b == a' || b == b'
 
 class (Monad m) => NewShuffleProgress x m a | x -> m a where
-    inform :: [Pair a] -> x -> m x
+    inform :: ShuffleIdent -> [Pair a] -> x -> m x
     check :: x -> m Bool
 
 newtype DedupedShuffleProgress x b = DedupedShuffleProgress { getDedupedShuffleProgress :: x }
 
 instance (NewShuffleProgress x m a) => NewShuffleProgress (DedupedShuffleProgress x b) m (a,b) where
-    inform as (DedupedShuffleProgress x) = DedupedShuffleProgress <$> inform (fmap (fmap fst) as) x
+    inform s as (DedupedShuffleProgress x) = DedupedShuffleProgress <$> inform s (fmap (fmap fst) as) x
     check (DedupedShuffleProgress x) = check x
 
 class (NewShuffleProgress x m a) => NewShuffleProgress' x m a where
-    informOpen :: [a] -> [a] -> x -> m x
+    informOpen :: ShuffleIdent -> [a] -> [a] -> x -> m x
 
-solve :: (NewShuffleProgress x m a, Eq a) => PartialShuffle a -> x -> m (Maybe [Pair a])
-solve (PartialShuffle []) x = bool Nothing (Just []) <$> check x
-solve (PartialShuffle (a:as)) x = do
-    x' <- inform [a] x
-    let as' = filter (not . conflictsWith a) as
-    y <- inform as' x'
-    b <- check y
-    if b then
-        fmap (a:) <$> solve (PartialShuffle as') x'
-    else
-        solve (PartialShuffle as) x
+instance (NewShuffleProgress' x m a) => NewShuffleProgress' (DedupedShuffleProgress x b) m (a,b) where
+    informOpen s ls rs (DedupedShuffleProgress x) = DedupedShuffleProgress <$> informOpen s (fmap fst ls) (fmap fst rs) x
 
-solveStep :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => (PartialShuffle' a -> x -> m (Maybe [Pair a])) -> PartialShuffle' a -> x -> m (Maybe [Pair a])
-solveStep _ (PartialShuffle' rs [] _) x = bool Nothing (Just rs) <$> check x
-solveStep rec (PartialShuffle' rs ((a, True):as) bs) x = do
-    (x', b, bs') <- findMatchUnordered a (fmap fst as) (filter (/= a) bs) x
+solveStep :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => (ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])) -> ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])
+solveStep _ shuffleName (PartialShuffle' rs [] _) x = bool Nothing (Just rs) <$> check x
+solveStep rec shuffleName (PartialShuffle' rs ((a, True):as) bs) x = do
+    (x', b, bs') <- findMatchUnordered shuffleName a (fmap fst as) (filter (/= a) bs) x
     let as' = filter ((/= b) . fst) as
-    rec (PartialShuffle' (UnorderedPair a b : rs) as' bs') x'
-solveStep rec (PartialShuffle' rs ((a, False):as) bs) x = do
-    (x', b, bs') <- findMatchOrdered a (fmap fst as) bs x
+    rec shuffleName (PartialShuffle' (UnorderedPair a b : rs) as' bs') x'
+solveStep rec shuffleName (PartialShuffle' rs ((a, False):as) bs) x = do
+    (x', b, bs') <- findMatchOrdered shuffleName a (fmap fst as) bs x
     let as' = filter (\(a', isUnordered) -> not isUnordered || a' /= b) as
-    rec (PartialShuffle' (OrderedPair a b : rs) as' bs') x'
+    rec shuffleName (PartialShuffle' (OrderedPair a b : rs) as' bs') x'
 
-solve' :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => PartialShuffle' a -> x -> m (Maybe [Pair a])
+solve' :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])
 solve' = solveStep solve'
 {-
 solve' (PartialShuffle' rs [] _) x = bool Nothing (Just rs) <$> check x
@@ -159,43 +139,44 @@ solve' (PartialShuffle' rs ((a, False):as) bs) x = do
     solve' (PartialShuffle' (OrderedPair a b : rs) as' bs') x'
 -}
 
-findMatchUnordered :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => a -> [a] -> [a] -> x -> m (x, a, [a])
-findMatchUnordered a as bs x = findMatchUnordered' a as bs x [] where
+findMatchUnordered :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> a -> [a] -> [a] -> x -> m (x, a, [a])
+findMatchUnordered s a as bs x = findMatchUnordered' a as bs x [] where
     findMatchUnordered' a as [] x cs = fail "No match available"
     findMatchUnordered' a as (b:bs) x cs | a == b = findMatchUnordered' a as bs x cs
     findMatchUnordered' a as (b:bs) x cs = do
-        x' <- inform [UnorderedPair a b] x
+        x' <- inform s [UnorderedPair a b] x
         let as' = filter (/= b) as
         let bs' = filter (/= a) bs
         let cs' = filter (/= a) cs
-        y <- informOpen as' (cs' <> bs') x'
+        y <- informOpen s as' (cs' <> bs') x'
         c <- check y
         if c then return (x', b, reverse cs' <> bs')
         else findMatchUnordered' a as bs x (b:cs)
 
-findMatchOrdered :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => a -> [a] -> [a] -> x -> m (x, a, [a])
-findMatchOrdered a as [] x = fail "No match available"
-findMatchOrdered a as (b:bs) x = do
-    x' <- inform [OrderedPair a b] x
-    y <- informOpen as bs x'
-    c <- check y
-    if c then return (x', b, bs)
-    else (\(x'', b', bs') -> (x'', b', b:bs')) <$> findMatchOrdered a as bs x
+findMatchOrdered :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> a -> [a] -> [a] -> x -> m (x, a, [a])
+findMatchOrdered s a as bs x = findMatchOrdered' a as bs x [] where
+    findMatchOrdered' a as [] x cs = fail "No match available"
+    findMatchOrdered' a as (b:bs) x cs = do
+        x' <- inform s [OrderedPair a b] x
+        y <- informOpen s as (cs <> bs) x'
+        c <- check y
+        if c then return (x', b, reverse cs <> bs)
+        else findMatchOrdered' a as bs x (b:cs)
 
-solveBatched :: (MonadFail m, NewShuffleProgress' x m a, Eq a, Show a) => PartialShuffle' a -> x -> m (Maybe [Pair a])
-solveBatched s@(PartialShuffle' rs as bs) x | length as <= 5 = trace ("solve' (" <> show s <> ") x") $ solve' s x
-solveBatched s@(PartialShuffle' rs as bs) x = trace ("solveBatched, lengths as, bs: " <> show (length as) <> " " <> show (length bs)) $ solveBatch (length as, length as `div` 2) s x
+solveBatched :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])
+solveBatched shuffleIdent s@(PartialShuffle' rs as bs) x | length as <= 5 = solve' shuffleIdent s x
+solveBatched shuffleIdent s@(PartialShuffle' rs as bs) x = solveBatch shuffleIdent (length as, length as `div` 2) s x
 
-solveBatch :: (MonadFail m, NewShuffleProgress' x m a, Eq a, Show a) => (Int, Int) -> PartialShuffle' a -> x -> m (Maybe [Pair a])
-solveBatch (total, n) s x | total `div` 2 > n = solveBatched s x
-solveBatch (total, n) s@(PartialShuffle' rs as bs) x | length as - 1 <= n = solveStep (solveBatch (total, total - ((total - n) * 2)))  s x
-solveBatch (total, n) s@(PartialShuffle' rs as bs) x = do
+solveBatch :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> (Int, Int) -> PartialShuffle' a -> x -> m (Maybe [Pair a])
+solveBatch shuffleIdent (total, n) s x | total `div` 2 > n = solveBatched shuffleIdent s x
+solveBatch shuffleIdent (total, n) s@(PartialShuffle' rs as bs) x | length as - 1 <= n = solveStep (\shuffleIdent -> solveBatch shuffleIdent (total, total - ((total - n) * 2))) shuffleIdent s x
+solveBatch shuffleIdent (total, n) s@(PartialShuffle' rs as bs) x = do
     let (rs', as', bs') = findBatch n as bs
-    x' <- inform rs' x
-    y <- informOpen (fmap fst as') bs' x'
+    x' <- inform shuffleIdent rs' x
+    y <- informOpen shuffleIdent (fmap fst as') bs' x'
     c <- check y
-    if c then solveBatch (total, total - ((total - n) * 2)) (PartialShuffle' (rs <> rs') as' bs') x' --todo: don't go to full half of new size in success case
-    else solveBatch (total, ((total - n) `div` 2) + n) s x
+    if c then solveBatch shuffleIdent (total, total - ((total - n) * 2)) (PartialShuffle' (rs <> rs') as' bs') x' --todo: don't go to full half of new size in success case
+    else solveBatch shuffleIdent (total, ((total - n) `div` 2) + n) s x
 
 findBatch :: (Eq a) => Int -> [(a, Bool)] -> [a] -> ([Pair a], [(a, Bool)], [a])
 findBatch n as bs = findBatch' [] n as bs where
@@ -211,58 +192,22 @@ findBatch n as bs = findBatch' [] n as bs where
         in findBatch' (r:rs) n as' bs'
     findBatch' rs n _ _ = error "failed to find match"
 
-initSolve :: (NewShuffleProgress x m a) => PartialShuffle' a -> x -> m x
-initSolve (PartialShuffle' known ls rs) = inform known
-
-
 evalDataLookup' :: LogicData -> DataLookup -> [Pair Thingy]
 evalDataLookup' logicData lookup = (\(l,_,r) -> OrderedPair l r) <$> evalDataLookup logicData lookup
 
 
---test stuff
+solveAll :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => PartialShuffles a -> x -> MaybeT m (Map String [Pair a])
+solveAll (PartialShuffles done []) _ = return done
+solveAll (PartialShuffles done ((name, s@(PartialShuffle' known ls rs)):todo)) x = do
+    x' <- lift $ inform name known x
+    x'' <- lift $ informOpenAll todo x'
+    pairs <- MaybeT $ solveBatched name s x''
+    y <- lift $ inform name pairs x
+    solveAll (PartialShuffles (M.insert name pairs done) todo) y
 
-data KNFLiteral a = Positive a | Negative a deriving (Eq, Show)
-
-newtype KNF a = KNF [[KNFLiteral a]] deriving (Show)
-
-instance (Eq a) => NewShuffleProgress (KNF a) Identity (Either a Bool) where
-    check (KNF clauses) = return $ null clauses
-    inform [] x = return x
-    inform ((toLit -> (Just a)) : as) (KNF clauses) = inform as $ KNF $ filter (a `notElem`) clauses
-    inform (_:as) x = inform as x
-
-toLit (OrderedPair (Left a) (Right b)) = Just $ bool Negative Positive b a
-toLit _ = Nothing
-
-start :: (Ord a) => KNF a -> IO (PartialShuffle ((Either a Bool), a))
-start (KNF clauses) = fmap PartialShuffle $ randomOrder $ concatMap (\a -> [OrderedPair (Left a, a) (Right True, a), OrderedPair (Left a, a) (Right False, a)]) $ S.toList $ S.fromList $ [a | c <- clauses, Positive a <- c] <> [a | c <- clauses, Negative a <- c]
-
-randomOrder :: [a] -> IO [a]
-randomOrder [] = return []
-randomOrder inputs = do
-    let l = length inputs
-    i <- R.randomRIO (0, l-1)
-    let (x,xs) = takeOut i inputs
-    fmap (x:) $ randomOrder xs
-
-takeOut 0 (a:as) = (a,as)
-takeOut (pred -> n) (a:as) = let (a', as') = takeOut n as in (a', a:as')
-
-
-solveKNF :: (Ord a) => KNF a -> IO (Maybe [KNFLiteral a])
-solveKNF k = do
-    p <- start k
-    let Identity xs = solve p $ DedupedShuffleProgress k
-    return $ (catMaybes . fmap (toLit . fmap fst)) <$> xs
-
-exampleInput :: KNF Char
-exampleInput = KNF [[Positive 'a'], [Negative 'b'], [Negative 'a', Positive 'b', Negative 'c', Negative 'd', Positive 'e'], [Positive 'c']]
-
-{-
-
-for each shuffle:
-  assume all future shuffles in full
-  find a solution for the current shuffle
-  check the solution against constraints
-
--}
+informOpenAll :: (NewShuffleProgress' x m a) => [(ShuffleIdent, PartialShuffle' a)] -> x -> m x
+informOpenAll [] x = return x
+informOpenAll ((name, PartialShuffle' known ls rs) : partialShuffles) x = do
+    x' <- inform name known x
+    x'' <- informOpen name (fmap fst ls) rs x'
+    informOpenAll partialShuffles x''

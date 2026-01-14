@@ -39,6 +39,21 @@ instance Lattice Bool where
     bottom = False
     top = True
 
+instance Lattice Oolean where
+    bottom = OolFalse
+    top = OolTrue
+    meet OolFalse x = x
+    meet x OolFalse = x
+    meet OolOol x = x
+    meet x OolOol = x
+    meet OolTrue OolTrue = OolTrue
+    join OolTrue x = x
+    join x OolTrue = x
+    join OolOol x = x
+    join x OolOol = x
+    join OolFalse OolFalse = OolFalse
+
+
 newtype Meet a = Meet { getMeet :: a } deriving (Eq, Ord, Show)
 newtype Join a = Join { getJoin :: a } deriving (Eq, Ord, Show)
 newtype LatticeSum a = LatticeSum { getLatticeSum :: a } deriving (Eq, Ord, Show)

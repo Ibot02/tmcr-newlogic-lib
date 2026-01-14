@@ -14,7 +14,7 @@ import TMCR.Logic.Descriptor
       DescriptorName,
       DescriptorDeclaration,
       Descriptor(..),
-      DescriptorIdent(..) )
+      DescriptorIdent(..), Value' )
 import qualified TMCR.Logic.Descriptor as D
 import TMCR.Logic.Algebra (DNF(..), Join(..))
 import TMCR.Logic.Graphs
@@ -136,7 +136,7 @@ fromCountyExpression expr = fromCountyExpression' toTerm expr (VariableTerm Noth
   toTerm (D.Variable v) = VariableTerm $ Just $ T.unpack v
   toTerm (D.ConstantValue c) = fromThingy c
 
-fromExpression' :: (v -> Term v') -> D.DescriptorRule' Truthy v -> Expr (Maybe (Maybe v'))
+fromExpression' :: (Value' v -> Term v') -> D.DescriptorRule' Truthy v -> Expr (Maybe (Maybe v'))
 fromExpression' _ (D.Constant lit) = Term $ atom $ case lit of
   D.TruthyLiteral D.OolTrue -> "true"
   D.TruthyLiteral D.OolFalse -> "false"
@@ -145,7 +145,7 @@ fromExpression' toTerm (D.IsEqual value1 value2) = fmap (Just . Just) $ EqTerms 
 fromExpression' toTerm (D.CallDescriptor D.STruthy name vars) = Term $ Apply "descriptor" $ (atom $ T.unpack name) : fmap (fmap (Just . Just) . toTerm) vars <> [VariableTerm Nothing, VariableTerm (Just Nothing)]
 fromExpression' toTerm (D.CanAccess D.STruthy name vars state) = IntroVarExpr $ flip Conj (Term $ Apply "reachableNode" [VariableTerm Nothing, atom "state"]) (Term $ Apply "node" [VariableTerm Nothing, ListTerm (atom (T.unpack name): fmap (fmap (Just . Just . Just) . toTerm) vars) Nothing])
 fromExpression' toTerm (D.AtLeast expr value) = fromCountyExpression' toTerm expr $ (\case Infinite -> atom "inf"; Finite n -> atom (show n)) value
-fromExpression' toTerm (D.Exist rel v expr) = introVarUnder $ Conj (fromShuffle rel (fmap (Just . Just . Just) $ toTerm v) (VariableTerm (Just (Just Nothing)))) $ fromExpression' (maybe (VariableTerm Nothing) (fmap Just . toTerm)) expr
+fromExpression' toTerm (D.Exist rel v expr) = introVarUnder $ Conj (fromShuffle rel (fmap (Just . Just . Just) $ toTerm v) (VariableTerm (Just (Just Nothing)))) $ fromExpression' (\case D.Variable Nothing -> VariableTerm Nothing; D.Variable (Just x) -> fmap Just (toTerm $ D.Variable x); (D.ConstantValue t) -> fmap Just (toTerm $ D.ConstantValue t)){-(maybe (VariableTerm Nothing) (fmap Just . toTerm))-} expr
 fromExpression' toTerm (D.Min D.STruthy []) = Term $ atom "true"
 fromExpression' toTerm (D.Min D.STruthy xs) = foldl1 Conj $ fmap (fromExpression' toTerm) xs
 fromExpression' toTerm (D.Max D.STruthy []) = Term $ atom "false"
@@ -155,22 +155,32 @@ fromExpression' toTerm (D.Consume _ _ _ _) = Term $ atom "true"
 introVarUnder :: Expr (Maybe (Maybe (Maybe v))) -> Expr (Maybe (Maybe v))
 introVarUnder = IntroVarExpr . fmap (maybe (Just Nothing) $ maybe (Just (Just Nothing)) $ fmap (Just . Just))
 
-fromCountyExpression' :: (v -> Term v') -> D.DescriptorRule' County v -> Term v' -> Expr (Maybe (Maybe v'))
+fromCountyExpression' :: (Value' v -> Term v') -> D.DescriptorRule' County v -> Term v' -> Expr (Maybe (Maybe v'))
 fromCountyExpression' _ (D.Constant lit) lowerBound = case lit of
   D.CountyLiteral Infinite -> Term $ atom "true"
-  D.CountyLiteral (Finite n) -> fmap (Just . Just) $ Term $ OpTerm ">=" (atom (show n)) lowerBound
-fromCountyExpression' toTerm (D.Scale e Infinite) lowerBound = Disj (fmap (Just . Just) $ Term $ OpTerm ">=" (atom "0") lowerBound) $ fromCountyExpression' toTerm e (atom "1")
-fromCountyExpression' toTerm (D.Scale e (Finite n)) lowerBound = introVarUnder $ Conj (fromCountyExpression' (fmap Just . toTerm) e (VariableTerm Nothing)) (Term $ OpTerm ">=" (OpTerm "*" (atom (show n)) (VariableTerm (Just (Just Nothing)))) (fmap (Just . Just . Just) lowerBound))
-fromCountyExpression' toTerm (D.Sum []) lowerBound = fmap (Just . Just) $ Term $ OpTerm ">=" (atom "0") lowerBound
-fromCountyExpression' toTerm (D.Sum (e:es)) lowerBound = introVarUnder $ introVarUnder $ Conj (Conj (Term $ OpTerm ">=" (VariableTerm (Just (Just Nothing))) (atom "0")) (Term $ OpTerm ">=" (VariableTerm (Just (Just (Just Nothing)))) (atom "0"))) $ Conj (Conj (fromCountyExpression' (fmap (Just . Just) . toTerm) e (VariableTerm Nothing)) (fromCountyExpression' (fmap (Just . Just) . toTerm) (D.Sum es) (VariableTerm (Just Nothing)))) $ Term $ OpTerm ">=" (OpTerm "+" (VariableTerm Nothing) (VariableTerm (Just Nothing))) (fmap (Just . Just . Just . Just) lowerBound)
+  D.CountyLiteral (Finite n) -> fmap (Just . Just) $ Term $ OpTerm "#>=" (atom (show n)) lowerBound
+fromCountyExpression' toTerm (D.Scale e Infinite) lowerBound = Disj (fmap (Just . Just) $ Term $ OpTerm "#>=" (atom "0") lowerBound) $ fromCountyExpression' toTerm e (atom "1")
+fromCountyExpression' toTerm (D.Scale e (Finite n)) lowerBound = introVarUnder $ Conj (fromCountyExpression' (fmap Just . toTerm) e (VariableTerm Nothing)) (Term $ OpTerm "#>=" (OpTerm "*" (atom (show n)) (VariableTerm (Just (Just Nothing)))) (fmap (Just . Just . Just) lowerBound))
+fromCountyExpression' toTerm (D.Sum []) lowerBound = fmap (Just . Just) $ Term $ OpTerm "#>=" (atom "0") lowerBound
+fromCountyExpression' toTerm (D.Sum (e:es)) lowerBound = let 
+    x = VariableTerm (Just (Just Nothing))
+    y = VariableTerm (Just (Just (Just Nothing)))
+    sumEAtLeastX = (fromCountyExpression' (fmap (Just . Just) . toTerm) e (VariableTerm Nothing))
+    sumEsAtLeastY = (fromCountyExpression' (fmap (Just . Just) . toTerm) (D.Sum es) (VariableTerm (Just Nothing)))
+  in introVarUnder $ introVarUnder $ Conj (Conj
+   (Term $ OpTerm "#>=" x (atom "0"))
+   (Term $ OpTerm "#>=" y (atom "0"))) $
+  Conj (Conj sumEAtLeastX
+             sumEsAtLeastY) $
+  Term $ OpTerm "#>=" (OpTerm "+" x y) (fmap (Just . Just . Just . Just) lowerBound)
 fromCountyExpression' toTerm (D.CallDescriptor D.SCounty name vars) lowerBound = Term $ Apply "descriptor" $ (atom $ T.unpack name) : fmap (fmap (Just . Just) . toTerm) vars <> [fmap (Just . Just) lowerBound, VariableTerm Nothing, VariableTerm (Just Nothing)]
 fromCountyExpression' toTerm (D.CanAccess D.SCounty name vars state) lowerBound = Term $ atom "todo" -- IntroVarExpr $ Conj (Term $ Apply "reachableNode" [VariableTerm Nothing, atom "state"]) (Term $ Apply "node" [VariableTerm Nothing, ListTerm (atom (T.unpack name): fmap (fmap (Just . Just . Just) . toTerm) vars) Nothing])
 fromCountyExpression' toTerm (D.Count rel v expr) lowerBound = Term $ atom "todo" -- IntroVarExpr $ Conj (fromShuffle rel (fmap (Just . Just . Just) $ toTerm v) (VariableTerm Nothing)) $ fmap (maybe (Just Nothing) $ maybe (Just (Just Nothing)) $ maybe Nothing (Just . Just . Just)) $ fromExpression' (maybe (VariableTerm Nothing) (fmap Just . toTerm)) expr
 fromCountyExpression' toTerm (D.Min D.SCounty []) lowerBound = Term $ atom "true"
 fromCountyExpression' toTerm (D.Min D.SCounty xs) lowerBound = foldl1 Conj $ fmap (\e -> fromCountyExpression' toTerm e lowerBound) xs
-fromCountyExpression' toTerm (D.Max D.SCounty []) lowerBound = fmap (Just . Just) $ Term $ OpTerm ">=" (atom "0") lowerBound
+fromCountyExpression' toTerm (D.Max D.SCounty []) lowerBound = fmap (Just . Just) $ Term $ OpTerm "#>=" (atom "0") lowerBound
 fromCountyExpression' toTerm (D.Max D.SCounty xs) lowerBound = foldl1 Disj $ fmap (\e -> fromCountyExpression' toTerm e lowerBound) xs
-fromCountyExpression' toTerm (D.Cast expr) lowerBound = Disj (fmap (Just . Just) $ Term $ OpTerm ">=" (atom "0") lowerBound) (fromExpression' toTerm expr)
+fromCountyExpression' toTerm (D.Cast expr) lowerBound = Disj (fmap (Just . Just) $ Term $ OpTerm "#>=" (atom "0") lowerBound) (fromExpression' toTerm expr)
 fromCountyExpression' toTerm (D.Consume _ _ _ _) lowerBound = Term $ atom "true"
 
 fromShuffle :: D.Relation -> Term v -> Term v -> Expr v
@@ -209,13 +219,16 @@ preamble :: String
 preamble = unlines [
     ":- set_prolog_flag(verbose, silent)."
   --, ":- use module(library(tabling))."
+  , ":- use_module(library(clpfd))."
   , ":- style_check(-singleton)."
   , ":- table reachableNode/2."
   , ":- discontiguous descriptor/3."
   , ":- discontiguous descriptor/4."
   , ":- discontiguous shuffle/3."
-  , "shuffle(A,B,C) :- false." -- keep this here to avoid issues when rendering with empty shuffles (ensures shuffle/3 is defined)
   , ":- discontiguous goal/0."
+  , ":- discontiguous left/2."
+  , ":- discontiguous right/2."
+  , "shuffle(A,B,C) :- false." -- keep this here to avoid issues when rendering with empty shuffles (ensures shuffle/3 is defined)
   , "goal :- false."
   ]
 
