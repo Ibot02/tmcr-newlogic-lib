@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE RecursiveDo #-}
 module TMCR.Tests where
 
 import TMCR.Logic.Merge(GameDef(..))
@@ -39,6 +40,12 @@ import qualified Data.ByteString as BS
 import Data.Aeson.Encode.Pretty (encodePretty', Config(..), defConfig, keyOrder)
 import System.IO (Handle(), stdout, IOMode (WriteMode), withFile, hPutStrLn)
 import qualified TMCR.Logic.Eval as Eval
+import TMCR.Logic.Eval (acyclicStatements)
+import Control.Monad.State (evalStateT)
+import Control.Monad.State.Lazy (evalState)
+import Control.Monad.Trans.Writer.CPS (execWriterT)
+import Control.Arrow (Arrow(second))
+import Data.Foldable (toList)
 
 compile :: Directory -> (Maybe GameDef, Text)
 compile dir = either (\x -> (Nothing, x)) (\y -> (Just y, "OK")) $ either (const (Left "Directory Error")) id $ P.run $ P.runError @DirectoryErrorWithContext $ P.runReader @Scopes (Scopes ["area", "room"]) $ P.runError @Text $ runInMemoryDir dir $ readGameDefStrErr (modules dir) where
@@ -207,3 +214,20 @@ writeLogicData = writeLogicDataTo stdout
 writeDefinitionsTo :: (Maybe FilePath) -> GameDef -> IO ()
 writeDefinitionsTo f g = withFileOrStdout f $ \h ->
     BS.hPutStr h $ T.encodeUtf8 $ Eval.displayDefinitions $ Eval.compile g
+
+
+testAcyclics :: IO ()
+testAcyclics = do
+    let stmts = snd $ flip Eval.runWithIDPool [0..] $ fmap IM.fromList $ execWriterT $ do
+            rec i <- Eval.makeStatement 0 $ Eval.ProjectStatement i []
+            c <- Eval.makeStatement 0 $ Eval.ConstantStatement []
+            j <- Eval.makeStatement 0 $ Eval.JoinStatement i c []
+            rec l <- do
+                    j' <- Eval.makeStatement 0 $ Eval.JoinStatement l i []
+                    Eval.makeStatement 0 $ Eval.UnionStatement [j', c]
+            return ()
+    
+    traverse (print . uncurry Eval.displayStatement . (second  fst) ) $ IM.toList stmts
+    traverse (print . second (toList . fst)) $ IM.toList stmts
+    print $ (\(a,_,_) -> a) $ evalState Eval.dependencyGraph stmts
+    print $ evalState acyclicStatements stmts

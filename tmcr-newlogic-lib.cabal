@@ -60,6 +60,7 @@ library
     , dependent-map
     , dependent-sum
     , recursion-schemes
+    , comonad
     , directory
     , polysemy
     , algebraic-graphs
