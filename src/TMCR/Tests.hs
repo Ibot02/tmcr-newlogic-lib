@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE RecordWildCards #-}
 module TMCR.Tests where
 
 import TMCR.Logic.Merge(GameDef(..))
@@ -32,7 +33,7 @@ import TMCR.Parser.Data (parseDataLookup)
 import Text.Megaparsec (parseTest, ParseErrorBundle (ParseErrorBundle), errorBundlePretty)
 import TMCR.Parser.Common (runParserC)
 import Control.Monad.Trans.Maybe (MaybeT(runMaybeT))
-import TMCR.Logic.Descriptor (DescriptorName)
+import TMCR.Logic.Descriptor (DescriptorName, Oolean (..))
 import Control.Monad (forM_)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Lazy as BL
@@ -46,6 +47,8 @@ import Control.Monad.State.Lazy (evalState)
 import Control.Monad.Trans.Writer.CPS (execWriterT)
 import Control.Arrow (Arrow(second))
 import Data.Foldable (toList)
+import TMCR.Exec.Eval (EvalState(EvalState), makeEvalStateIO)
+import qualified Data.Array as A
 
 compile :: Directory -> (Maybe GameDef, Text)
 compile dir = either (\x -> (Nothing, x)) (\y -> (Just y, "OK")) $ either (const (Left "Directory Error")) id $ P.run $ P.runError @DirectoryErrorWithContext $ P.runReader @Scopes (Scopes ["area", "room"]) $ P.runError @Text $ runInMemoryDir dir $ readGameDefStrErr (modules dir) where
@@ -61,10 +64,10 @@ readTest f = do
         Nothing -> error $ T.unpack e
         Just g -> return g
 
-testShuffle :: GameDef -> IO (PartialShuffle' String)
+testShuffle :: GameDef -> IO (PartialShuffle' Thingy)
 testShuffle g = PartialShuffle' [] <$> randomOrder (fmap (\x -> (x,True)) warps) <*> randomOrder warps where
-    warps = ("ExtraWarp" :) $ S.toList $ foldMap (foldMap (uncurry getWarp)) $ snd $ _defLogic g
-    getWarp "warp" [x] = S.singleton $ T.unpack $ displayPossiblyScopedName x
+    warps = (Global "ExtraWarp" :) $ S.toList $ foldMap (foldMap (uncurry getWarp)) $ snd $ _defLogic g
+    getWarp "warp" [x] = S.singleton $ x
     getWarp _ _ = S.empty
 
 getAll :: DescriptorName -> GameDef -> IO [Thingy]
@@ -87,6 +90,20 @@ testShuffles g = do
     itemShuffle <- fromSpec'' randomOrder (return . evalDataLookup' (_defLogicData g)) (const $ return []) itemSpec >>= rerandomize
     let itemShuffle' = fmap (T.unpack . displayPossiblyScopedName) $ itemShuffle
     return $ PartialShuffles mempty [("Warps", warps'), ("Items", itemShuffle')]
+
+testShuffles' :: GameDef -> IO (PartialShuffles Thingy)
+testShuffles' g = do
+    spec <- testShuffleSpec
+    warps <- testShuffle g --fromSpec'' randomOrder (return . evalDataLookup' (_defLogicData g)) (const $ return []) spec
+    itemSpec <- testItemShuffleSpec
+    {-
+    chests <- getAll "chest" g
+    traverse (putStrLn . T.unpack . displayPossiblyScopedName) chests
+    items <- return $ reverse $ fmap (ScopedName . (:[])) $ take (length chests) $ ["BombBag"] <> fmap (\n -> T.pack $ "Junk" <> show n) [1..]
+    let itemShuffle = fmap (T.unpack . displayPossiblyScopedName) $ PartialShuffle' [] (fmap (\x -> (x, False)) chests) items
+    -}
+    itemShuffle <- fromSpec'' randomOrder (return . evalDataLookup' (_defLogicData g)) (const $ return []) itemSpec >>= rerandomize
+    return $ PartialShuffles mempty [("Warps", warps), ("Items", itemShuffle)]
 
 testShuffleSpec :: IO ShuffleSpec
 testShuffleSpec = case P.run $ P.runError @(ParseErrorBundle Text Void) $ P.runReader @() () $ runParserC parseDataLookup "test input" "'areas' by 'name', 'rooms' by 'name', 'warps' foreach local 'name' collect local 'target'" of
@@ -231,3 +248,27 @@ testAcyclics = do
     traverse (print . second (toList . fst)) $ IM.toList stmts
     print $ (\(a,_,_) -> a) $ evalState Eval.dependencyGraph stmts
     print $ evalState acyclicStatements stmts
+
+
+testEval :: IO (Maybe [Pair Thingy])
+testEval = do
+    let stmts = A.listArray (0, 6) [
+              Eval.JoinStatement 1 2 [(0,0)]
+            , Eval.ConstantStatement [(OolTrue, [Global "A"])]
+            , Eval.UnionStatement [3, 4]
+            , Eval.ProjectStatement 5 [Eval.Match 1]
+            , Eval.ConstantStatement [(OolTrue, [Global "C"])]
+            , Eval.JoinStatement 2 6 [(0,0)]
+            , Eval.ShuffleStatement "Test"
+            ]
+    s <- makeEvalStateIO stmts 0 2
+    lefts <- randomOrder ["A", "B", "C", "D"]
+    rights <- randomOrder ["A", "B", "C", "D"]
+    solve' "Test" (PartialShuffle' [] [(Global x, False) | x <- lefts] [Global y | y <- rights]) s
+
+testEval' :: GameDef -> IO (Maybe (M.Map String [Pair Thingy]))
+testEval' game = do
+    let x = Eval.compile game
+    s <- makeEvalStateIO (fmap fst $ Eval.statements x) (Eval.definitionsGoalStatement x) 1
+    shuf <- testShuffles' game
+    runMaybeT $ solveAll shuf s

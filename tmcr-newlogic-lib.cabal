@@ -39,6 +39,7 @@ library
       TMCR.Shuffler
       TMCR.Exec
       TMCR.Exec.Internal
+      TMCR.Exec.Eval
   other-modules:
       Paths_tmcr_newlogic_lib
   hs-source-dirs:

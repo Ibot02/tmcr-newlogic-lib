@@ -31,3 +31,12 @@ taggedGetNodes = Labelled.vertexSet
 
 taggedGetEdges :: (Eq t, Ord n, Monoid t) => TaggedGraph t n -> [(n, t, n)]
 taggedGetEdges = fmap (\(t, node1, node2) -> (node1, t, node2)) . Labelled.edgeList
+
+instance Foldable (Labelled.Graph e) where
+    foldMap f Labelled.Empty = mempty
+    foldMap f (Labelled.Vertex a) = f a
+    foldMap f (Labelled.Connect _ g g') = foldMap f g <> foldMap f g'
+instance Traversable (Labelled.Graph e) where
+    traverse f Labelled.Empty = pure Labelled.Empty
+    traverse f (Labelled.Vertex a) = Labelled.Vertex <$> f a
+    traverse f (Labelled.Connect e g g') = Labelled.Connect e <$> traverse f g <*> traverse f g'

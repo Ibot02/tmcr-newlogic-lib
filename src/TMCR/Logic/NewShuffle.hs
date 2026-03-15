@@ -164,8 +164,25 @@ findMatchOrdered s a as bs x = findMatchOrdered' a as bs x [] where
         else findMatchOrdered' a as bs x (b:cs)
 
 solveBatched :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])
-solveBatched shuffleIdent s@(PartialShuffle' rs as bs) x | length as <= 5 = solve' shuffleIdent s x
+solveBatched shuffleIdent s@(PartialShuffle' rs as bs) x | length as <= 2 = solve' shuffleIdent s x
 solveBatched shuffleIdent s@(PartialShuffle' rs as bs) x = solveBatch shuffleIdent (length as, length as `div` 2) s x
+
+solveBatched' :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> PartialShuffle' a -> x -> m (Maybe [Pair a])
+solveBatched' shuffleIdent s@(PartialShuffle' rs as bs) x | length as <= 2 = solve' shuffleIdent s x
+solveBatched' shuffleIdent s@(PartialShuffle' rs as bs) x = solveBatch' shuffleIdent (length as, length as, 0) s x
+
+solveBatch' :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> (Int, Int, Int) -> PartialShuffle' a -> x -> m (Maybe [Pair a])
+solveBatch' shuffleIdent (total, n, offset) s@(PartialShuffle' rs as bs) x = trace ("solveBatch' " <> show (total, n, offset)) $ do
+    let (rs', as', bs') = findBatch n as (drop offset bs <> take offset bs)
+    x' <- inform shuffleIdent rs' x
+    y <- informOpen shuffleIdent (fmap fst as') bs' x'
+    c <- check y
+    if c
+    then solveBatched' shuffleIdent (PartialShuffle' (rs <> rs') as' bs') x'
+    else if offset + n < total
+        then solveBatch' shuffleIdent (total, n, offset + n) s x
+        else if n > 1 then solveBatch' shuffleIdent (total, n `div` 2, 0) s x else return Nothing
+
 
 solveBatch :: (MonadFail m, NewShuffleProgress' x m a, Eq a) => ShuffleIdent -> (Int, Int) -> PartialShuffle' a -> x -> m (Maybe [Pair a])
 solveBatch shuffleIdent (total, n) s x | total `div` 2 > n = solveBatched shuffleIdent s x
@@ -180,7 +197,9 @@ solveBatch shuffleIdent (total, n) s@(PartialShuffle' rs as bs) x = do
 
 findBatch :: (Eq a) => Int -> [(a, Bool)] -> [a] -> ([Pair a], [(a, Bool)], [a])
 findBatch n as bs = findBatch' [] n as bs where
-    findBatch' rs n as' bs' | length as' <= n = (rs, as', bs')
+    findBatch' rs n [] bs' = (rs, [], bs')
+    findBatch' rs 0 as' bs' = (rs, as', bs')
+    --findBatch' rs n as' bs' | length as' <= n = (rs, as', bs')
     findBatch' rs n as@((a, True):_) (b:bs) | a == b = findBatch' rs n as bs
     findBatch' rs n ((a, isUnordered):as) (b:bs) = let
         as' | isUnordered = filter ((/= b) . fst) as
@@ -189,7 +208,7 @@ findBatch n as bs = findBatch' [] n as bs where
             | otherwise = bs
         r | isUnordered = UnorderedPair a b
           | otherwise = OrderedPair a b
-        in findBatch' (r:rs) n as' bs'
+        in findBatch' (r:rs) (n-1) as' bs'
     findBatch' rs n _ _ = error "failed to find match"
 
 evalDataLookup' :: LogicData -> DataLookup -> [Pair Thingy]
@@ -201,7 +220,7 @@ solveAll (PartialShuffles done []) _ = return done
 solveAll (PartialShuffles done ((name, s@(PartialShuffle' known ls rs)):todo)) x = do
     x' <- lift $ inform name known x
     x'' <- lift $ informOpenAll todo x'
-    pairs <- MaybeT $ solveBatched name s x''
+    pairs <- MaybeT $ solveBatched' name s x''
     y <- lift $ inform name pairs x
     solveAll (PartialShuffles (M.insert name pairs done) todo) y
 

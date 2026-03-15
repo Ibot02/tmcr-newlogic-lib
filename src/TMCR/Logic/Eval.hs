@@ -12,13 +12,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeApplications #-}
 module TMCR.Logic.Eval where
 
 import TMCR.Logic.Common
 import TMCR.Logic.Descriptor (Oolean (..), DescriptorName, DescriptorIdent (..), Descriptor (..), Literal (..), DescriptorRule' (..), DescriptorType(..), DescriptorRule, Value (..), SDescriptorType (..), Value' (..), Relation (..))
 import TMCR.Logic.Shuffle (ShuffleName)
-import TMCR.Logic.Merge (GameDef(..))
-import TMCR.Logic.Descriptor (DescriptorDeclaration(..), DescriptorExport(..))
+import TMCR.Logic.Merge (GameDef(..), defLogic, defDescriptorDefinitionsCounty, defDescriptors)
+import TMCR.Logic.Descriptor (DescriptorDeclaration(..), DescriptorExport(..), descriptorDeclarationArguments)
 
 import Data.Array (Array)
 import qualified Data.Array as A
@@ -48,7 +50,7 @@ import TMCR.Logic.Logic (LogicNodeName)
 import qualified TMCR.Logic.Logic as L
 
 import qualified TMCR.Logic.Graphs as G
-import TMCR.Logic.Algebra (Join(getJoin), DNF (getDisjunctions), Lattice (join))
+import TMCR.Logic.Algebra (Join(..), DNF (..), Lattice (join), singleToDNF)
 import Control.Monad.State (StateT (runStateT), execStateT, MonadState (..), evalState, gets)
 import qualified Control.Monad.State.Strict as S
 
@@ -60,6 +62,10 @@ import qualified Data.Monoid as Mon
 import Debug.Trace (traceShowM)
 import Control.Monad.Trans.Free
 import Control.Comonad (Comonad(..))
+import qualified Algebra.Graph.Labelled as LG
+import Text.Read (readMaybe)
+import TMCR.Logic.NewShuffle (ShuffleIdent)
+import Data.Functor.Classes (Show1 (..))
 
 type StatementID = Int
 type CountyStatementID = Int
@@ -68,6 +74,7 @@ type Statement = StatementF StatementID
 data Definitions = Definitions {
       statements :: Array StatementID (Statement, Int) -- statement, together with the number of columns its evaluation has
     , statementNames :: Map (Role, DescriptorName) StatementID
+    , definitionsGoalStatement :: StatementID
     , countyStatments :: () --todo
 }
 
@@ -75,10 +82,19 @@ data StatementF a =
       UnionStatement [a]
     | ProjectStatement a [Pattern Int]
     | JoinStatement a a [(Int, Int)]
-    | ShuffleStatement ShuffleName
+    | ShuffleStatement ShuffleIdent
     | ConstantStatement [(Oolean, [Thingy])]
-    | AtLeastStatment CountyStatementID Nteger
+    | AtLeastStatement CountyStatementID Nteger
     deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+instance Show1 StatementF where
+    liftShowsPrec showsPrec' showList' prec s = showParen (prec > 10) $ case s of
+        UnionStatement xs -> showString "UnionStatement " . showList' xs
+        ProjectStatement x patt -> showString "ProjectStatement " . showsPrec' 11 x . showString " " . showList patt
+        JoinStatement x y on -> showString "JoinStatement " . showsPrec' 11 x . showString " " . showsPrec' 11 y . showString " " . showList on
+        ShuffleStatement ident -> showString "ShuffleStatement " . showsPrec 11 ident
+        ConstantStatement c -> showString "ConstantStatement " . showList c
+        AtLeastStatement c n -> showString "AtLeastStatement " . showsPrec 11 c . showString " " . showsPrec 11 n
 
 data Pattern a = Any | Match a deriving (Eq, Ord, Show)
 
@@ -123,6 +139,7 @@ $(makePrisms ''Pattern)
 
 compile :: GameDef -> Definitions
 compile gameDef = f' a where
+    logicGraph' = simplifyLogic $ gameDef ^. defLogic . _1
     f' x = flip evalWithIDPool [0..] $ do
         (names, stmts) <- x
         (names', (stmts', _)) <- flip runStateT (stmts, IM.empty) $ do
@@ -176,7 +193,38 @@ compile gameDef = f' a where
     asText (L.PlainName t) = t
     asText (L.QuotedName t) = t
     asText L.Wildcard = error "unexpected wildcard"
+    logicStatements :: (MonadWithIDPool StatementID m, MonadWriter [(StatementID, (Statement, Int))] m) => Map (Role, DescriptorName) StatementID -> StatementID -> m StatementID
     logicStatements names reachable = do
+        let edges = LG.edgeSet logicGraph'
+            edgesFromBeyondTheVoid = M.fromListWith (<>) [(e, [(args, n)]) | (es, Nothing, Just n) <- S.toList edges, (ConditionalEdge (e, args)) <- es]
+            unconditionalReachable = S.fromList [n | (es, Nothing, Just n) <- S.toList edges, UnconditionalEdge <- es]
+            innerUnconditionalEdges = S.fromList [(s,t) | (es, Just s, Just t) <- S.toList edges, UnconditionalEdge <- es]
+            innerEdges = M.fromListWith (<>) [(e, [(source, args, target)]) | (es, Just source, Just target) <- S.toList edges, (ConditionalEdge (e, args)) <- es]
+        initialReachable' <- forM (M.toList edgesFromBeyondTheVoid) $ \(descriptorName, rows) -> do
+            let x = names M.! (Defined, descriptorName)
+                [d] = gameDef ^.. defDescriptors . at descriptorName . _Just . descriptorDeclarationArguments . to length
+            c <- makeStatement (d + 1) $ ConstantStatement $ fmap (\(args, target) -> (OolTrue, args <> [asThingy target])) rows
+            j <- makeStatement (d + 1) $ JoinStatement x c $ [(i, i) | i <- [0..(d-1)]]
+            if (d == 0) then return j else makeStatement 1 $ ProjectStatement j [Match d]
+        initialReachable <- if null unconditionalReachable then return initialReachable' else do
+            s <- makeStatement 1 $ ConstantStatement $ fmap (\n -> (OolTrue, [asThingy n])) $ S.toList unconditionalReachable
+            return $ s : initialReachable'
+        reachableByEdge' <- forM (M.toList innerEdges) $ \(descriptorName, rows) -> do
+            let x = names M.! (Defined, descriptorName)
+                [d] = gameDef ^.. defDescriptors . at descriptorName . _Just . descriptorDeclarationArguments . to length
+            c <- makeStatement (d + 2) $ ConstantStatement $ fmap (\(source, args, target) -> (OolTrue, args <> [asThingy source, asThingy target])) rows
+            j <- makeStatement (d + 2) $ JoinStatement x c $ [(i,i) | i <- [0.. d-1]]
+            p <- makeStatement 2 $ ProjectStatement j [Match d, Match (d+1)]
+            j' <- makeStatement 2 $ JoinStatement reachable p [(0,0)] 
+            makeStatement 1 $ ProjectStatement j' [Match 1]
+        reachableByEdge <- if null innerUnconditionalEdges then return reachableByEdge' else do
+            c <- makeStatement 2 $ ConstantStatement $ fmap (\(s,t) -> (OolTrue, [asThingy s, asThingy t])) $ S.toList innerUnconditionalEdges
+            j <- makeStatement 2 $ JoinStatement reachable c [(0,0)]
+            s <- makeStatement 1 $ ProjectStatement j [Match 1]
+            return $ s : reachableByEdge'
+        makeStatement 1 $ UnionStatement $ initialReachable <> reachableByEdge
+    logicStatements' :: (MonadWithIDPool StatementID m, MonadWriter [(StatementID, (Statement, Int))] m) => Map (Role, DescriptorName) StatementID -> StatementID -> m StatementID
+    logicStatements' names reachable = do
         us <- forM (G.taggedGetEdges $ fst $ _defLogic gameDef) $ \(fromNode, rules, toNode) -> forM (S.toList $ getDisjunctions $ getJoin rules) $ \d -> do
             let conj (name, args) acc = do
                     let x = names M.! (Defined, name)
@@ -234,7 +282,7 @@ compile gameDef = f' a where
     fromRule (CanAccess STruthy name args _) = call (Exported, name) args
     fromRule (AtLeast r n) = do
         (c, vars) <- fromCountyRule r
-        s <- makeStatement (length vars) $ AtLeastStatment c n
+        s <- makeStatement (length vars) $ AtLeastStatement c n
         return (s, vars)
     fromRule (Exist rel (Variable v) r) = do
         (c, vars) <- fromRule r
@@ -274,10 +322,10 @@ compile gameDef = f' a where
         return (0, [])
     fromRel :: (MonadWriter [(StatementID, (Statement, Int))] m, MonadReader (Map (Role, DescriptorName) StatementID) m, MonadWithIDPool StatementID m) => Relation -> m (StatementID, Int, Int)
     fromRel (Forward s) = do
-        i <- makeStatement 2 $ ShuffleStatement s
+        i <- makeStatement 2 $ ShuffleStatement $ T.unpack s
         return (i, 0, 1)
     fromRel (Backward s) = do
-        i <- makeStatement 2 $ ShuffleStatement s
+        i <- makeStatement 2 $ ShuffleStatement $ T.unpack s
         return (i, 1, 0)
     fromConj r a = do
         (s, vars) <- fromRule r
@@ -295,6 +343,35 @@ compile gameDef = f' a where
         j <- makeStatement (length args) $ JoinStatement d c $ zip (fmap snd constants) [0..]
         p <- makeStatement (length variables) $ ProjectStatement j $ fmap (Match . snd) variables
         return (p, fmap fst variables)
+
+data EdgeCondition e = ConditionalEdge e | UnconditionalEdge deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+simplifyLogic :: G.TaggedGraph (Join (DNF e)) (Maybe LogicNodeName) -> G.TaggedGraph [EdgeCondition e] (Maybe LogicNodeName)
+simplifyLogic logicGraph = allocateNewNames . splitEdges $ logicGraph where
+    splitEdges :: G.TaggedGraph (Join (DNF e)) v -> G.TaggedGraph [EdgeCondition e] (Either Int v)
+    splitEdges = flip evalWithIDPool [0..] . LG.foldg (return LG.empty) (return . LG.Vertex . Right) splitEdge
+    splitEdge :: Join (DNF e) -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v)) -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v)) -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v))
+    splitEdge (Join (DNF e)) | null e = liftA2 $ LG.Connect []
+                             | otherwise = foldl1 (\f f' g g' -> liftA2 (LG.Connect []) (f g g') (f' g g')) $ fmap (splitConjunction . S.toList) $ S.toList e
+    splitConjunction :: [e] -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v)) -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v)) -> WithIDPool i (G.TaggedGraph [EdgeCondition e] (Either i v))
+    splitConjunction [] = liftA2 $ LG.Connect [UnconditionalEdge]
+    splitConjunction [e] = liftA2 $ LG.Connect [ConditionalEdge e]
+    splitConjunction (e:es) = \getSource getTarget -> do
+        source <- getSource
+        target <- getTarget
+        v <- getID
+        let intermediate = LG.Vertex $ Left v
+        later <- splitConjunction es (pure intermediate) (pure target)
+        return $ LG.Connect [] (LG.Connect [ConditionalEdge e] source intermediate) later
+    allocateNewNames :: (Functor f) => f (Either Int (Maybe LogicNodeName)) -> f (Maybe LogicNodeName)
+    allocateNewNames = fmap $ either (Just . newNames) id
+    newNames :: Int -> LogicNodeName
+    newNames i = L.Global . L.QuotedName . T.pack . show . (i +) $ maybe 0 succ highestPossibleConflict
+    usedNames :: [LogicNodeName]
+    usedNames = logicGraph ^.. to LG.vertexList . traverse . traverse
+    highestPossibleConflict :: Maybe Int
+    highestPossibleConflict = S.lookupMax @Int $ S.fromList $ mapMaybe (\case L.QuotedName n -> readMaybe (T.unpack n); _ -> Nothing) $ mapMaybe (\case L.Global a -> Just a; _ -> Nothing) usedNames
+
 
 removeGaps :: (MonadWithIDPool StatementID m, MonadState (IntMap (Statement, Int), IntMap StatementID) m) => m ()
 removeGaps = do
@@ -337,7 +414,8 @@ definitionsFromStatmentsWithGaps stmts names = runIdentity $ do
             names' = case traverse (`IM.lookup` oldToNewIDs) names of
                 Just x -> x
                 Nothing -> error "name of not defined statment"
-        return $ Definitions stmtArray names' ()
+            goalStmt = names M.! (Exported, "goal")
+        return $ Definitions stmtArray names' goalStmt ()
 
 definitionsFromStatements :: IntMap (Statement, Int) -> Map (Role, DescriptorName) StatementID -> Definitions
 definitionsFromStatements stmts names =
@@ -345,7 +423,8 @@ definitionsFromStatements stmts names =
         maxBound = fst $ IM.findMax stmts
         bounds = (minBound, maxBound)
         stmtArray = A.array bounds $ IM.toList stmts
-    in Definitions stmtArray names ()
+        goalStmt = names M.! (Exported, "goal")
+    in Definitions stmtArray names goalStmt ()
 
 makeStatement :: (MonadWithIDPool i m, MonadWriter [(i, (a, b2))] m) => b2 -> a -> m i
 makeStatement n s = do
@@ -553,7 +632,7 @@ findIssues = execWriterT $ do
                     _ -> return ()
             ConstantStatement cs -> forM_ cs $ \(_, values) -> when (length values /= n) $ tell ["Constant statement " <> show i <> " has term " <> show values <> " but claims " <> show n <> " columns"]
             ShuffleStatement _ -> when (n /= 2) $ tell ["Shuffle " <> show i <> " claims " <> show n <> " columns"]
-            AtLeastStatment _ _ -> return () --todo: once counties are implemented
+            AtLeastStatement _ _ -> return () --todo: once counties are implemented
 
 acyclicStatements :: (MonadState (IntMap (Statement, Int)) m) => m [StatementID]
 acyclicStatements = do
@@ -604,11 +683,11 @@ displayStatement i s = T.pack (show i) <> " <- " <> case s of
     ProjectStatement p patterns -> displayRef p <> "!(" <> T.intercalate "," (fmap displayPattern patterns) <> ")"
     JoinStatement s s' [] -> displayRef s <> " x " <> displayRef s'
     JoinStatement s s' vs -> displayRef s <> " x " <> displayRef s' <> "!(" <> T.intercalate ", " (fmap (\(v1, v2) -> T.pack $ show v1 <> "=" <> show v2) vs)<> ")"
-    ShuffleStatement shuf -> "\"" <> shuf <> "\""
+    ShuffleStatement shuf -> "\"" <> T.pack shuf <> "\""
     ConstantStatement [] -> "false"
     ConstantStatement s -> T.intercalate " | " $ fmap (uncurry displayConstant) s
-    AtLeastStatment s Infinite -> displayRef s <> " == inf"
-    AtLeastStatment s (Finite n) -> displayRef s <> " >= " <> T.pack (show n)
+    AtLeastStatement s Infinite -> displayRef s <> " == inf"
+    AtLeastStatement s (Finite n) -> displayRef s <> " >= " <> T.pack (show n)
 {-
 
 descriptor(item, "CanTurnMinish", X1, X0) :- ool.
